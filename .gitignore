@@ -1,0 +1,4 @@
+.netlify/
+local-server.log
+local-server.err.log
+qa-*.png

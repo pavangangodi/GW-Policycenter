@@ -1,26 +1,32 @@
 const STORE_KEY = "policycenter-workbench-v1";
 
 const products = [
-  { lob: "Personal Auto", base: 1180, type: "Personal", detail: "Drivers, vehicles, garage location, coverages" },
-  { lob: "Businessowners", base: 6400, type: "Commercial", detail: "Business profile, premises, liability, property" },
-  { lob: "Commercial Property", base: 9800, type: "Commercial", detail: "Buildings, locations, deductibles, limits" },
-  { lob: "Workers Compensation", base: 7200, type: "Commercial", detail: "Class codes, payroll, locations, audit plan" },
-  { lob: "General Liability", base: 5200, type: "Commercial", detail: "Operations, exposure, limits, endorsements" },
-  { lob: "Commercial Auto", base: 7600, type: "Commercial", detail: "Fleet, drivers, filings, vehicle schedules" }
+  { lob: "Personal Auto", base: 1180, type: "Personal", detail: "Drivers, vehicles, garage location, coverages", factor: 1 },
+  { lob: "Home", base: 960, type: "Personal", detail: "Dwelling, property, liability, deductibles", factor: 0.92 },
+  { lob: "BOP", base: 4200, type: "Commercial", detail: "Business profile, premises, liability, property", factor: 1.35 },
+  { lob: "Workers Comp", base: 5200, type: "Commercial", detail: "Class codes, payroll, states, audit plan", factor: 1.55 }
 ];
 
 const wizardSteps = [
-  ["product", "Product", "Producer, product, quote type"],
-  ["qualification", "Qualification", "Pre-qualification questions"],
+  ["product", "Product Selection", "Choose product and producer"],
+  ["qualification", "Pre-Qualification", "Claims, credit, driving history"],
   ["policy", "Policy Info", "Named insured and term"],
-  ["details", "Line Details", "Exposure and coverage data"],
-  ["risk", "Risk Analysis", "UW issues and referrals"],
-  ["quote", "Quote", "Premium versions"],
-  ["bind", "Bind / Issue", "Finalize transaction"]
+  ["coverage", "Coverage Details", "Limits, deductibles, premium basis"],
+  ["quote", "Quote Generation", "Premium and quote disposition"],
+  ["bind", "Bind & Issue", "Policy number and documents"]
 ];
+
+const demoUsers = [
+  { username: "underwriter", password: "admin123", role: "Underwriter", name: "Uma Underwriter" },
+  { username: "agent", password: "admin123", role: "Agent", name: "Alex Agent" },
+  { username: "manager", password: "admin123", role: "Manager", name: "Mina Manager" }
+];
+
+const usStates = ["AL", "AK", "AZ", "AR", "CA", "CO", "CT", "FL", "GA", "IL", "NY", "TX", "WA", "WI"];
 
 const defaultState = {
   user: null,
+  loginError: "",
   activeTab: "desktop",
   selectedAccountId: "A-10091",
   selectedPolicyId: "BOP-458901",
@@ -30,14 +36,23 @@ const defaultState = {
   policySection: "summary",
   wizardStep: "product",
   searchText: "",
+  desktopQueueTab: "activities",
+  queueStatusFilter: "All",
   newAccountOpen: false,
   documentScope: "account",
   sidebarCollapsed: false,
   activeModal: null,
+  notificationOpen: false,
+  loading: false,
   sortScope: "",
   sortKey: "",
   sortDir: "asc",
   tablePages: {},
+  notifications: [
+    { id: "Ntf-1001", message: "Driver MVR verification is pending for Evelyn Carter.", type: "warning", read: false, created: "2026-05-19" },
+    { id: "Ntf-1002", message: "Submission S-88201 has an open underwriting referral.", type: "error", read: false, created: "2026-05-19" },
+    { id: "Ntf-1003", message: "Renewal review queue is ready for triage.", type: "info", read: true, created: "2026-05-18" }
+  ],
   accounts: [
     {
       id: "A-10091",
@@ -222,6 +237,14 @@ const defaultState = {
       producerCode: "KST-1048",
       uwCompany: "Pinnacle Mutual",
       stage: "Quote",
+      paymentPlan: "Quarterly",
+      priorClaims: "No",
+      creditScoreRange: "700-749",
+      yearsDrivingExperience: 12,
+      coverageType: "Liability + Property",
+      coverageLimit: 1000000,
+      deductible: 1000,
+      quoteNumber: "QT-88201",
       premium: 38120,
       revenue: 4200000,
       payroll: 1150000,
@@ -246,6 +269,14 @@ const defaultState = {
       producerCode: "NSP-2201",
       uwCompany: "Cascade Casualty",
       stage: "Qualification",
+      paymentPlan: "Monthly",
+      priorClaims: "Yes",
+      creditScoreRange: "650-699",
+      yearsDrivingExperience: 18,
+      coverageType: "Full Coverage",
+      coverageLimit: 250000,
+      deductible: 500,
+      quoteNumber: "",
       premium: 0,
       revenue: 0,
       payroll: 0,
@@ -280,7 +311,8 @@ const defaultState = {
   transactions: [
     { id: "T-1201", accountId: "A-10091", policyNumber: "BOP-458901", type: "Submission", status: "Issued", effective: "2026-01-01", premium: 14820 },
     { id: "T-1202", accountId: "A-10091", policyNumber: "S-88201", type: "Submission", status: "Quoted", effective: "2026-06-01", premium: 38120 },
-    { id: "T-1203", accountId: "A-10044", policyNumber: "CP-330118", type: "Renewal", status: "Open", effective: "2026-09-01", premium: 0 }
+    { id: "T-1203", accountId: "A-10044", policyNumber: "CP-330118", type: "Renewal", status: "Open", effective: "2026-09-01", premium: 0 },
+    { id: "T-1204", accountId: "A-10132", policyNumber: "PA-778204", type: "Renewal", status: "Pending", effective: "2026-06-10", premium: 0 }
   ],
   claims: [
     { id: "CLM-90211", accountId: "A-10132", policyNumber: "PA-778204", claimant: "Evelyn Carter", lossDate: "2023-04-02", type: "Collision", status: "Closed", incurred: 8600 },
@@ -308,21 +340,48 @@ function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORE_KEY));
     if (saved && saved.accounts && saved.policies) {
-      return { ...structuredClone(defaultState), ...saved };
+      return migrateState({ ...structuredClone(defaultState), ...saved });
     }
   } catch {
     localStorage.removeItem(STORE_KEY);
   }
-  return structuredClone(defaultState);
+  return migrateState(structuredClone(defaultState));
 }
 
 function saveState() {
   localStorage.setItem(STORE_KEY, JSON.stringify(state));
 }
 
+function migrateState(nextState) {
+  nextState.loginError ||= "";
+  nextState.desktopQueueTab ||= "activities";
+  nextState.queueStatusFilter ||= "All";
+  nextState.notifications ||= structuredClone(defaultState.notifications);
+  nextState.notificationOpen = false;
+  nextState.loading = false;
+  nextState.submissions = nextState.submissions.map((submission) => normalizeSubmission(submission));
+  return nextState;
+}
+
+function normalizeSubmission(submission) {
+  return {
+    paymentPlan: "Annual",
+    priorClaims: submission.qualifications?.priorLosses || "No",
+    creditScoreRange: "700-749",
+    yearsDrivingExperience: 5,
+    coverageType: "Standard Liability",
+    coverageLimit: 250000,
+    deductible: 500,
+    quoteNumber: "",
+    qualifications: { eligible: "Yes", priorLosses: "No", hazardous: "No", ...(submission.qualifications || {}) },
+    ...submission
+  };
+}
+
 function render() {
   if (!state.user) {
     app.innerHTML = renderLogin();
+    ensureDataTestIds();
     return;
   }
 
@@ -332,51 +391,129 @@ function render() {
       <div class="workspace">
         ${renderSidebar()}
         <main class="main">
-          ${renderActiveView()}
+          ${renderBreadcrumb()}
+          ${state.loading ? renderLoading() : renderActiveView()}
         </main>
       </div>
       ${renderStickyActions()}
       ${renderModal()}
     </div>
   `;
+  ensureDataTestIds();
+}
+
+function renderBreadcrumb() {
+  const labels = {
+    desktop: "Policy Search",
+    search: "Search",
+    accounts: "Accounts",
+    policies: "Policies",
+    claims: "Claims",
+    drivers: "Driver Details",
+    renewals: "Renewals",
+    submission: "Submission Wizard",
+    team: "Queues",
+    reports: "Reports",
+    admin: "Administration"
+  };
+  const current = labels[state.activeTab] || "Workspace";
+  const detail =
+    state.activeTab === "accounts" ? state.selectedAccountId :
+    state.activeTab === "policies" ? state.selectedPolicyId :
+    state.activeTab === "submission" ? state.selectedSubmissionId :
+    state.activeTab === "drivers" ? state.selectedDriverId : "";
+  return `
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <span>Home</span><span>/</span><strong>${escapeHtml(current)}</strong>${detail ? `<span>/</span><span>${escapeHtml(detail)}</span>` : ""}
+    </nav>
+  `;
+}
+
+function renderLoading() {
+  return `
+    <div class="loading-panel" role="status" aria-live="polite">
+      <span class="spinner"></span>
+      <span>Loading workspace</span>
+      <div class="skeleton-row"></div>
+      <div class="skeleton-row short"></div>
+    </div>
+  `;
+}
+
+function ensureDataTestIds() {
+  const used = new Map();
+  app.querySelectorAll("[data-testid]").forEach((element) => {
+    const raw = element.getAttribute("data-testid") || "interactive";
+    const count = used.get(raw) || 0;
+    used.set(raw, count + 1);
+    if (count > 0) element.setAttribute("data-testid", `${raw}-${count + 1}`);
+  });
+
+  const interactive = app.querySelectorAll("button, input, select, textarea, a[href], tr[data-action], [role='button'], [tabindex]");
+  interactive.forEach((element, index) => {
+    if (!element.getAttribute("data-testid")) {
+      const base = inferTestId(element, index);
+      let candidate = base;
+      let suffix = 2;
+      while (used.has(candidate)) {
+        candidate = `${base}-${suffix}`;
+        suffix += 1;
+      }
+      used.set(candidate, 1);
+      element.setAttribute("data-testid", candidate);
+    }
+  });
+}
+
+function inferTestId(element, index) {
+  if (element.matches("[data-quickjump]")) return "quickjump-input";
+  if (element.matches("tr[data-account-id]")) return `account-row-${slug(element.dataset.accountId)}`;
+  if (element.matches("tr[data-policy-number]")) return `policy-row-${slug(element.dataset.policyNumber)}`;
+  if (element.matches("tr[data-submission-id]")) return `submission-row-${slug(element.dataset.submissionId)}`;
+  if (element.matches("tr[data-driver-id]")) return `driver-row-${slug(element.dataset.driverId)}`;
+  const form = element.closest("form")?.dataset.form;
+  const type = element.tagName.toLowerCase();
+  const name = element.getAttribute("name") || element.dataset.submissionField || element.dataset.numberField || element.dataset.qualification || element.dataset.action || element.dataset.tab || element.dataset.scope || element.textContent;
+  return `${form ? `${slug(form)}-` : ""}${slug(name || type)}-${type}-${index}`;
 }
 
 function renderLogin() {
   return `
     <section class="login-screen">
-      <form class="login-panel" data-form="login">
+      <form class="login-panel" data-form="login" novalidate>
         <div class="brand">
           <span class="brand-mark">PC</span>
           <span>PolicyCenter Workbench<small>Training application</small></span>
         </div>
         <div>
           <h1>Policy administration workspace</h1>
-          <p>Use a demo role to explore account files, policy transactions, quote workflows, underwriting issues, notes, documents, and queues.</p>
+          <p>Sign in with a demo account to practice agent, underwriter, and manager workflows with Playwright-ready selectors.</p>
+        </div>
+        ${state.loginError ? `<div class="form-alert error" data-testid="login-error-msg">${escapeHtml(state.loginError)}</div>` : ""}
+        <div class="field">
+          <label for="login-username">Username</label>
+          <input id="login-username" name="username" autocomplete="username" required data-testid="username-input" />
+          <span class="field-error"></span>
         </div>
         <div class="field">
-          <label>User name</label>
-          <input name="name" value="Pavan Kumar" autocomplete="name" />
+          <label for="login-password">Password</label>
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required data-testid="password-input" />
+          <span class="field-error"></span>
         </div>
-        <div class="field">
-          <label>Role</label>
-          <select name="role">
-            <option>Producer</option>
-            <option>Underwriter</option>
-            <option>Service Representative</option>
-            <option>Manager</option>
-          </select>
+        <button class="btn primary" type="submit" data-testid="login-btn">Sign in</button>
+        <div class="demo-users" aria-label="Demo users">
+          ${demoUsers.map((user) => `<button class="demo-user" type="button" data-action="fill-demo-login" data-username="${user.username}" data-testid="demo-user-${user.username}-btn"><strong>${user.username}</strong><span>${user.role}</span></button>`).join("")}
         </div>
-        <button class="btn primary" type="submit">Sign in</button>
       </form>
       <div class="login-visual">
         <div class="login-board">
-          <div class="metric"><span class="metric-label">Open activities</span><b class="metric-value">18</b></div>
-          <div class="metric"><span class="metric-label">Quoted premium</span><b class="metric-value">$38K</b></div>
-          <div class="queue-preview"><b>My Submissions</b><br /><span>Qualification, Quote, Risk Analysis, Bind</span></div>
-          <div class="queue-preview"><b>Policy File</b><br /><span>Actions, tools, documents, notes</span></div>
+          <div class="metric"><span class="metric-label">Demo users</span><b class="metric-value">3</b></div>
+          <div class="metric"><span class="metric-label">Automation hooks</span><b class="metric-value">100%</b></div>
+          <div class="queue-preview"><b>Underwriter</b><br /><span>Referrals, approvals, risk review</span></div>
+          <div class="queue-preview"><b>Agent</b><br /><span>Accounts, submissions, quote and bind</span></div>
           <div class="flow-preview">
-            <b>Submission general steps</b><br />
-            <span>Account, product, pre-qualification, policy info, quote, bind, issue</span>
+            <b>Submission workflow</b><br />
+            <span>Product selection, pre-qualification, policy info, coverages, quote, bind and issue</span>
             <div class="flow-line"><i></i><i></i><i></i><i></i><i></i><i></i></div>
           </div>
         </div>
@@ -393,8 +530,10 @@ function renderTopbar() {
     ["claims", "Claims"],
     ["drivers", "Driver Details"],
     ["renewals", "Renewals"],
+    ["reports", "Reports"],
     ["admin", "Administration"]
   ];
+  const unread = state.notifications.filter((notification) => !notification.read).length;
   return `
     <header class="topbar">
       <div class="topbar-main">
@@ -406,12 +545,38 @@ function renderTopbar() {
           ${tabs.map(([id, label]) => `<button class="tab ${state.activeTab === id ? "active" : ""}" data-action="tab" data-tab="${id}">${label}</button>`).join("")}
         </nav>
         <div class="top-tools">
-          <input class="quickjump" data-quickjump placeholder="Policy / Account / Driver search" aria-label="QuickJump search" />
-          <div class="user-chip"><span class="avatar">${initials(state.user.name)}</span><span>${escapeHtml(state.user.name)}</span></div>
-          <button class="btn ghost" data-action="logout">Logout</button>
+          <input class="quickjump" data-quickjump placeholder="Policy / Account / Driver search" aria-label="QuickJump search" data-testid="quickjump-input" />
+          <div class="notification-shell">
+            <button class="notification-btn" data-action="toggle-notifications" aria-label="Notifications" data-testid="notification-center-btn">
+              <span class="notification-symbol">!</span>
+              ${unread ? `<span class="notification-badge" data-testid="notification-badge">${unread}</span>` : ""}
+            </button>
+            ${state.notificationOpen ? renderNotificationCenter() : ""}
+          </div>
+          <div class="user-chip"><span class="avatar">${initials(state.user.name)}</span><span>${escapeHtml(state.user.username || state.user.name)}<small>${escapeHtml(state.user.role)}</small></span></div>
+          <button class="btn ghost" data-action="logout" data-testid="logout-btn">Logout</button>
         </div>
       </div>
     </header>
+  `;
+}
+
+function renderNotificationCenter() {
+  return `
+    <div class="notification-panel" data-testid="notification-panel">
+      <div class="notification-head">
+        <strong>Notifications</strong>
+        <button class="btn compact" data-action="mark-notifications-read" data-testid="mark-notifications-read-btn">Mark read</button>
+      </div>
+      <div class="notification-list">
+        ${state.notifications.length ? state.notifications.slice(0, 8).map((notification, index) => `
+          <button class="notification-item ${notification.read ? "read" : "unread"}" data-action="mark-notification-read" data-notification-id="${notification.id}" data-testid="notification-item-${index}">
+            <span class="status-dot ${escapeAttr(notification.type)}"></span>
+            <span>${escapeHtml(notification.message)}<small>${date(notification.created)}</small></span>
+          </button>
+        `).join("") : `<div class="empty">No notifications.</div>`}
+      </div>
+    </div>
   `;
 }
 
@@ -427,7 +592,8 @@ function renderSidebar() {
     ["drivers", "Driver Verification", driverTasks],
     ["renewals", "Renewal Alerts", openRenewals],
     ["claims", "Claims Lookup", state.claims.length],
-    ["team", "Team Queues", openApprovals]
+    ["team", "Team Queues", openApprovals],
+    ["reports", "Reports", 3]
   ];
   return `
     <aside class="workflow-sidebar" aria-label="Workflow navigation">
@@ -471,6 +637,8 @@ function renderActiveView() {
       return renderSearch();
     case "team":
       return renderTeam();
+    case "reports":
+      return renderReports();
     case "admin":
       return renderAdmin();
     case "submission":
@@ -481,45 +649,54 @@ function renderActiveView() {
 }
 
 function renderDesktop() {
-  const myActivities = state.activities.filter((a) => a.assignedTo === state.user.name || a.queue === "My Activities");
+  const roleCopy = roleDashboardCopy();
+  const myActivities = state.activities.filter((a) => a.assignedTo === state.user.name || a.queue === "My Activities" || state.user.role === "Manager");
   const openSubmissions = state.submissions.filter((s) => !["Issued", "Withdrawn", "Declined", "Not Taken"].includes(s.status));
-  const renewalAlerts = state.transactions.filter((t) => t.type === "Renewal" && t.status === "Open");
+  const renewalAlerts = state.transactions.filter((t) => t.type === "Renewal" && isWithinDays(t.effective, 30));
   const approvals = state.uwIssues.filter((i) => i.status === "Open");
   const driverTasks = state.activities.filter((a) => a.queue === "Driver Verification");
+  const activeItems = getDesktopQueueItems();
 
   return `
     <div class="page-head">
       <div class="page-title">
-        <h1>Policy Search & Work Queues</h1>
-        <p>Compact producer and underwriter workspace for policy lookup, assigned work, approvals, renewals, and driver verification.</p>
+        <h1>${escapeHtml(roleCopy.title)}</h1>
+        <p>${escapeHtml(roleCopy.description)}</p>
       </div>
       <div class="actions">
-        <button class="btn primary" data-action="open-new-account">New Account</button>
-        <button class="btn" data-action="new-submission">New Submission</button>
-        <button class="btn" data-action="tab" data-tab="drivers">Driver Details</button>
+        <button class="btn primary" data-action="open-new-account" data-testid="desktop-new-account-btn">New Account</button>
+        <button class="btn" data-action="new-submission" data-testid="desktop-new-submission-btn">New Submission</button>
+        <button class="btn" data-action="tab" data-tab="drivers" data-testid="desktop-driver-details-btn">Driver Details</button>
       </div>
     </div>
 
     <section class="queue-strip">
-      <button class="queue-tile active" data-action="tab" data-tab="desktop"><span>Task queues</span><b>${myActivities.filter((a) => a.status === "Open").length}</b></button>
-      <button class="queue-tile" data-action="tab" data-tab="submission"><span>Recent submissions</span><b>${openSubmissions.length}</b></button>
-      <button class="queue-tile" data-action="tab" data-tab="policies"><span>Assigned policies</span><b>${state.policies.length}</b></button>
-      <button class="queue-tile" data-action="tab" data-tab="team"><span>Pending approvals</span><b>${approvals.length}</b></button>
-      <button class="queue-tile" data-action="tab" data-tab="renewals"><span>Renewal alerts</span><b>${renewalAlerts.length}</b></button>
-      <button class="queue-tile" data-action="tab" data-tab="drivers"><span>Driver verification</span><b>${driverTasks.filter((a) => a.status === "Open").length}</b></button>
+      <button class="queue-tile ${state.desktopQueueTab === "activities" ? "active" : ""}" data-action="desktop-queue" data-queue="activities" data-testid="queue-activities-tab"><span>Activities</span><b>${myActivities.filter((a) => a.status === "Open").length}</b></button>
+      <button class="queue-tile ${state.desktopQueueTab === "submissions" ? "active" : ""}" data-action="desktop-queue" data-queue="submissions" data-testid="queue-submissions-tab"><span>Submissions</span><b>${openSubmissions.length}</b></button>
+      <button class="queue-tile ${state.desktopQueueTab === "renewals" ? "active" : ""}" data-action="desktop-queue" data-queue="renewals" data-testid="queue-renewals-tab"><span>Renewals 30 days</span><b>${renewalAlerts.length}</b></button>
+      <button class="queue-tile ${state.desktopQueueTab === "underwriting" ? "active" : ""}" data-action="desktop-queue" data-queue="underwriting" data-testid="queue-underwriting-tab"><span>UW referrals</span><b>${approvals.length}</b></button>
+      <button class="queue-tile" data-action="tab" data-tab="policies" data-testid="queue-policies-tab"><span>Assigned policies</span><b>${state.policies.length}</b></button>
+      <button class="queue-tile" data-action="tab" data-tab="drivers" data-testid="queue-driver-verification-tab"><span>Driver verification</span><b>${driverTasks.filter((a) => a.status === "Open").length}</b></button>
     </section>
 
-    <section class="workbench-grid">
-      <div class="panel">
-        <div class="panel-head"><h2>Task Queues</h2><span>Assigned and queue work</span></div>
-        ${tableToolbar("activities", "Filter tasks")}
-        <div class="table-wrap">${activityTable(myActivities, true)}</div>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>${escapeHtml(queueTitle(state.desktopQueueTab))}</h2>
+        <span>${activeItems.length} records</span>
       </div>
-      <div class="panel">
-        <div class="panel-head"><h2>Recent Submissions</h2><span>Open policy transactions</span></div>
-        ${tableToolbar("submissions", "Filter submissions")}
-        <div class="table-wrap">${submissionTable(openSubmissions)}</div>
+      <div class="table-toolbar">
+        <input class="search-input compact" data-search placeholder="Search queue" value="${escapeAttr(state.searchText)}" data-testid="queue-search-input" />
+        <select data-filter-status data-testid="queue-status-filter">
+          ${optionSet(["All", "Open", "Pending", "Closed"], state.queueStatusFilter)}
+        </select>
       </div>
+      <div class="queue-tabs">
+        ${["activities", "submissions", "renewals", "underwriting"].map((queue) => `<button class="side-item ${state.desktopQueueTab === queue ? "active" : ""}" data-action="desktop-queue" data-queue="${queue}" data-testid="desktop-queue-${queue}-btn">${queueTitle(queue)}</button>`).join("")}
+      </div>
+      <div class="table-wrap">${renderDesktopQueueTable(state.desktopQueueTab, activeItems)}</div>
+    </section>
+
+    <section class="workbench-grid" style="margin-top: 10px">
       <div class="panel">
         <div class="panel-head"><h2>Assigned Policies</h2><span>Policies currently in service</span></div>
         ${tableToolbar("policies", "Filter policies")}
@@ -541,9 +718,56 @@ function renderDesktop() {
   `;
 }
 
+function roleDashboardCopy() {
+  if (state.user.role === "Underwriter") {
+    return { title: "Underwriter Dashboard", description: "Review referrals, risk alerts, submissions, and bind authority work assigned to underwriting." };
+  }
+  if (state.user.role === "Manager") {
+    return { title: "Manager Dashboard", description: "Monitor queue health, pending approvals, renewal alerts, and team service activity." };
+  }
+  return { title: "Agent Dashboard", description: "Search policies, create accounts, start submissions, quote, bind, and track follow-up tasks." };
+}
+
+function queueTitle(queue) {
+  return {
+    activities: "Activities",
+    submissions: "In-Progress Submissions",
+    renewals: "Upcoming Renewals",
+    underwriting: "Underwriting Referrals"
+  }[queue] || "Queue";
+}
+
+function getDesktopQueueItems() {
+  const q = state.searchText.trim().toLowerCase();
+  const statusFilter = state.queueStatusFilter;
+  let items = [];
+  if (state.desktopQueueTab === "submissions") {
+    items = state.submissions.filter((s) => !["Issued", "Withdrawn", "Declined", "Not Taken"].includes(s.status));
+  } else if (state.desktopQueueTab === "renewals") {
+    items = state.transactions.filter((t) => t.type === "Renewal" && isWithinDays(t.effective, 30));
+  } else if (state.desktopQueueTab === "underwriting") {
+    items = state.uwIssues.filter((i) => ["Open", "Pending"].includes(i.status));
+  } else {
+    items = state.activities;
+  }
+  return items.filter((item) => {
+    const text = JSON.stringify(item).toLowerCase();
+    const statusValue = item.status === "Complete" ? "Closed" : item.status;
+    return (!q || text.includes(q)) && (statusFilter === "All" || statusValue === statusFilter);
+  });
+}
+
+function renderDesktopQueueTable(queue, items) {
+  if (!items.length) return `<div class="empty">No ${escapeHtml(queueTitle(queue).toLowerCase())} found.</div>`;
+  if (queue === "submissions") return submissionQueueTable(items);
+  if (queue === "renewals") return renewalQueueTable(items);
+  if (queue === "underwriting") return underwritingQueueTable(items);
+  return activityTable(items, true, true);
+}
+
 function renderAccounts() {
   const query = state.searchText.trim().toLowerCase();
-  const accounts = state.accounts.filter((a) => !query || [a.id, a.name, a.producer, a.status].join(" ").toLowerCase().includes(query));
+  const accounts = state.accounts.filter((a) => !query || [a.id, a.name, a.email, a.phone, a.producer, a.status].join(" ").toLowerCase().includes(query));
   const selected = getAccount(state.selectedAccountId) || state.accounts[0];
   if (selected && state.selectedAccountId !== selected.id) state.selectedAccountId = selected.id;
 
@@ -554,8 +778,8 @@ function renderAccounts() {
         <p>Search, create, and manage insured account information separately from policy transactions.</p>
       </div>
       <div class="actions">
-        <button class="btn primary" data-action="open-new-account">Create Account</button>
-        <button class="btn" data-action="new-submission">New Submission</button>
+        <button class="btn primary" data-action="open-new-account" data-testid="create-account-btn">Create Account</button>
+        <button class="btn" data-action="new-submission" data-testid="account-new-submission-btn">New Submission</button>
       </div>
     </div>
 
@@ -565,7 +789,10 @@ function renderAccounts() {
       <div class="panel">
         <div class="panel-head">
           <h2>Account Search</h2>
-          <input class="search-input" data-search placeholder="Name, account number, producer" value="${escapeAttr(state.searchText)}" />
+          <div class="search-inline">
+            <input class="search-input" data-search placeholder="Name, account number, email, phone" value="${escapeAttr(state.searchText)}" data-testid="account-search-input" />
+            <button class="btn" data-action="run-search" data-testid="account-search-btn">Search</button>
+          </div>
         </div>
         <div class="table-wrap">${accountTable(accounts)}</div>
       </div>
@@ -576,20 +803,22 @@ function renderAccounts() {
 
 function renderNewAccountForm() {
   return `
-    <form class="panel" data-form="new-account">
-      <div class="panel-head"><h2>Create Account</h2><button class="btn ghost" type="button" data-action="close-new-account">Close</button></div>
+    <form class="panel" data-form="new-account" novalidate>
+      <div class="panel-head"><h2>Create Account</h2><button class="btn ghost" type="button" data-action="close-new-account" data-testid="close-account-form-btn">Close</button></div>
       <div class="panel-body field-grid cols-3">
-        <div class="field"><label>Account name</label><input name="name" required placeholder="Company or person" /></div>
-        <div class="field"><label>Type</label><select name="type"><option>Company</option><option>Person</option></select></div>
-        <div class="field"><label>Service tier</label><select name="tier"><option>Gold</option><option>Platinum</option><option>Silver</option></select></div>
-        <div class="field"><label>Producer</label><input name="producer" value="Keystone Agency" /></div>
-        <div class="field"><label>Producer code</label><input name="producerCode" value="KST-1048" /></div>
-        <div class="field"><label>Primary contact</label><input name="primaryContact" placeholder="Contact name" /></div>
-        <div class="field"><label>Email</label><input name="email" type="email" /></div>
-        <div class="field"><label>Phone</label><input name="phone" /></div>
-        <div class="field"><label>Official ID</label><input name="officialId" placeholder="FEIN, DL, tax ID" /></div>
-        <div class="field" style="grid-column: 1 / -1"><label>Address</label><input name="address" required /></div>
-        <div class="actions" style="grid-column: 1 / -1"><button class="btn primary" type="submit">Create as New Account</button></div>
+        <div class="field"><label for="account-first-name">First Name</label><input id="account-first-name" name="firstName" required data-testid="account-first-name-input" /><span class="field-error"></span></div>
+        <div class="field"><label for="account-last-name">Last Name</label><input id="account-last-name" name="lastName" required data-testid="account-last-name-input" /><span class="field-error"></span></div>
+        <div class="field"><label for="account-dob">Date of Birth</label><input id="account-dob" name="dob" placeholder="DD/MM/YYYY" required data-validate="date" data-adult="true" data-testid="account-dob-input" /><span class="field-error"></span></div>
+        <div class="field"><label for="account-email">Email</label><input id="account-email" name="email" required data-validate="email" data-testid="account-email-input" /><span class="field-error"></span></div>
+        <div class="field"><label for="account-phone">Phone Number</label><input id="account-phone" name="phone" required data-validate="phone" placeholder="10 digits" data-testid="account-phone-input" /><span class="field-error"></span></div>
+        <div class="field"><label for="account-type">Account Type</label><select id="account-type" name="accountType" required data-testid="account-type-select"><option>Personal</option><option>Commercial</option></select><span class="field-error"></span></div>
+        <div class="field"><label for="account-address1">Address Line 1</label><input id="account-address1" name="address1" required data-testid="account-address1-input" /><span class="field-error"></span></div>
+        <div class="field"><label for="account-address2">Address Line 2</label><input id="account-address2" name="address2" data-testid="account-address2-input" /><span class="field-error"></span></div>
+        <div class="field"><label for="account-city">City</label><input id="account-city" name="city" required data-testid="account-city-input" /><span class="field-error"></span></div>
+        <div class="field"><label for="account-state">State</label><select id="account-state" name="state" required data-testid="account-state-select">${optionSet(usStates, "CA")}</select><span class="field-error"></span></div>
+        <div class="field"><label for="account-zip">ZIP Code</label><input id="account-zip" name="zip" required data-validate="zip" placeholder="5 digits" data-testid="account-zip-input" /><span class="field-error"></span></div>
+        <div class="field"><label for="account-tier">Service Tier</label><select id="account-tier" name="tier" data-testid="account-tier-select"><option>Gold</option><option>Platinum</option><option>Silver</option></select><span class="field-error"></span></div>
+        <div class="actions" style="grid-column: 1 / -1"><button class="btn primary" type="submit" data-testid="account-form-submit-btn">Create as New Account</button></div>
       </div>
     </form>
   `;
@@ -724,9 +953,9 @@ function renderPolicies() {
         <p>Work with policy files, policy transactions, contract screens, tools, and contextual actions.</p>
       </div>
       <div class="actions">
-        <button class="btn" data-action="policy-action" data-kind="Policy Change">Start Policy Change</button>
-        <button class="btn" data-action="policy-action" data-kind="Renewal">Start Renewal</button>
-        <button class="btn danger" data-action="policy-action" data-kind="Cancellation">Start Cancellation</button>
+        <button class="btn" data-action="policy-action" data-kind="Policy Change" data-testid="policy-change-btn">Start Policy Change</button>
+        <button class="btn" data-action="policy-action" data-kind="Renewal" data-testid="policy-renewal-btn">Start Renewal</button>
+        <button class="btn danger" data-action="policy-action" data-kind="Cancellation" data-testid="policy-cancellation-btn">Start Cancellation</button>
       </div>
     </div>
 
@@ -734,7 +963,10 @@ function renderPolicies() {
       <div class="panel">
         <div class="panel-head">
           <h2>Policy Search</h2>
-          <input class="search-input" data-search placeholder="Policy number, account, line" value="${escapeAttr(state.searchText)}" />
+          <div class="search-inline">
+            <input class="search-input" data-search placeholder="Policy number, account name, status" value="${escapeAttr(state.searchText)}" data-testid="policy-number-input" />
+            <button class="btn" data-action="run-search" data-testid="policy-search-btn">Search</button>
+          </div>
         </div>
         <div class="table-wrap">${policyTable(policies)}</div>
       </div>
@@ -833,30 +1065,30 @@ function renderDriverDetails() {
           `).join("")}
         </div>
 
-        <form class="compact-form" data-form="driver-update">
+        <form class="compact-form" data-form="driver-update" novalidate>
           <div class="form-section">
             <h2>Driver Information</h2>
             <div class="field-grid cols-4">
               <div class="field"><label>Driver ID</label><input value="${driver.id}" disabled /></div>
-              <div class="field"><label>Full name</label><input name="name" value="${escapeAttr(driver.name)}" required /></div>
-              <div class="field"><label>Date of birth</label><input type="date" name="dob" value="${driver.dob}" required /></div>
-              <div class="field"><label>Relationship</label><select name="relationship">${optionSet(["Named Insured", "Spouse", "Employee Driver", "Household Driver"], driver.relationship)}</select></div>
-              <div class="field"><label>Phone</label><input name="phone" value="${escapeAttr(driver.phone)}" /></div>
-              <div class="field"><label>Email</label><input name="email" type="email" value="${escapeAttr(driver.email)}" /></div>
-              <div class="field"><label>Marital status</label><select name="maritalStatus">${optionSet(["Single", "Married", "Divorced", "Widowed"], driver.maritalStatus)}</select></div>
-              <div class="field"><label>Gender</label><select name="gender">${optionSet(["Female", "Male", "Non-disclosed"], driver.gender)}</select></div>
-              <div class="field wide"><label>Address</label><input name="address" value="${escapeAttr(driver.address)}" /></div>
+              <div class="field"><label>Full name</label><input name="name" value="${escapeAttr(driver.name)}" required data-testid="driver-update-name-input" /><span class="field-error"></span></div>
+              <div class="field"><label>Date of birth</label><input name="dob" value="${displayDate(driver.dob)}" placeholder="DD/MM/YYYY" required data-validate="date" data-adult="true" data-testid="driver-update-dob-input" /><span class="field-error"></span></div>
+              <div class="field"><label>Relationship</label><select name="relationship" data-testid="driver-update-relationship-select">${optionSet(["Named Insured", "Spouse", "Employee Driver", "Household Driver"], driver.relationship)}</select><span class="field-error"></span></div>
+              <div class="field"><label>Phone</label><input name="phone" value="${escapeAttr(driver.phone)}" data-validate="phone" data-testid="driver-update-phone-input" /><span class="field-error"></span></div>
+              <div class="field"><label>Email</label><input name="email" value="${escapeAttr(driver.email)}" data-validate="email" data-testid="driver-update-email-input" /><span class="field-error"></span></div>
+              <div class="field"><label>Marital status</label><select name="maritalStatus" data-testid="driver-update-marital-status-select">${optionSet(["Single", "Married", "Divorced", "Widowed"], driver.maritalStatus)}</select><span class="field-error"></span></div>
+              <div class="field"><label>Gender</label><select name="gender" data-testid="driver-update-gender-select">${optionSet(["Female", "Male", "Non-disclosed"], driver.gender)}</select><span class="field-error"></span></div>
+              <div class="field wide"><label>Address</label><input name="address" value="${escapeAttr(driver.address)}" data-testid="driver-update-address-input" /><span class="field-error"></span></div>
             </div>
           </div>
 
           <div class="form-section">
             <h2>License Information</h2>
             <div class="field-grid cols-4">
-              <div class="field"><label>License number</label><input name="licenseNumber" value="${escapeAttr(driver.licenseNumber)}" required /></div>
-              <div class="field"><label>State</label><select name="licenseState">${optionSet(["CA", "WI", "WA", "TX", "NY", "IL"], driver.licenseState)}</select></div>
-              <div class="field"><label>Status</label><select name="licenseStatus">${optionSet(["Valid", "Pending", "Suspended", "Expired"], driver.licenseStatus)}</select></div>
-              <div class="field"><label>First licensed</label><input type="date" name="licensedDate" value="${driver.licensedDate}" /></div>
-              <div class="field"><label>Expiration</label><input type="date" name="expirationDate" value="${driver.expirationDate}" /></div>
+              <div class="field"><label>License number</label><input name="licenseNumber" value="${escapeAttr(driver.licenseNumber)}" required data-testid="driver-update-license-number-input" /><span class="field-error"></span></div>
+              <div class="field"><label>State</label><select name="licenseState" data-testid="driver-update-license-state-select">${optionSet(["CA", "WI", "WA", "TX", "NY", "IL"], driver.licenseState)}</select><span class="field-error"></span></div>
+              <div class="field"><label>Status</label><select name="licenseStatus" data-testid="driver-update-license-status-select">${optionSet(["Valid", "Pending", "Suspended", "Expired"], driver.licenseStatus)}</select><span class="field-error"></span></div>
+              <div class="field"><label>First licensed</label><input name="licensedDate" value="${displayDate(driver.licensedDate)}" placeholder="DD/MM/YYYY" data-validate="date" data-testid="driver-update-licensed-date-input" /><span class="field-error"></span></div>
+              <div class="field"><label>Expiration</label><input name="expirationDate" value="${displayDate(driver.expirationDate)}" placeholder="DD/MM/YYYY" data-validate="date" data-testid="driver-update-expiration-date-input" /><span class="field-error"></span></div>
               <div class="field"><label>Verification</label><input value="${escapeAttr(driver.verification)}" disabled /></div>
             </div>
           </div>
@@ -1025,14 +1257,18 @@ function renderSubmissionWizard() {
         <p>${escapeHtml(account?.name || "")} - ${submission.lob} - ${submission.quoteType} - ${submission.status}</p>
       </div>
       <div class="actions">
-        <button class="btn" data-action="select-account" data-account-id="${submission.accountId}">Open Account</button>
-        <button class="btn danger" data-action="close-submission" data-close-status="Withdrawn">Withdraw</button>
+        <button class="btn" data-action="select-account" data-account-id="${submission.accountId}" data-testid="submission-open-account-btn">Open Account</button>
+        <button class="btn danger" data-action="close-submission" data-close-status="Withdrawn" data-testid="submission-withdraw-btn">Withdraw</button>
       </div>
+    </div>
+    <div class="progress-shell" aria-label="Submission progress">
+      <div class="progress-track"><span style="width: ${((stepIndex + 1) / wizardSteps.length) * 100}%"></span></div>
+      <div class="progress-label">Step ${stepIndex + 1} of ${wizardSteps.length}</div>
     </div>
     <div class="wizard">
       <aside class="wizard-steps">
         ${wizardSteps.map(([id, label, hint], i) => `
-          <button class="step ${id === state.wizardStep ? "active" : ""} ${i < stepIndex ? "done" : ""}" data-action="wizard-step" data-step="${id}">
+          <button class="step ${id === state.wizardStep ? "active" : ""} ${i < stepIndex ? "done" : ""}" data-action="wizard-step" data-step="${id}" data-testid="wizard-step-${id}-btn">
             <span class="step-index">${i + 1}</span>
             <span><strong>${label}</strong><small>${hint}</small></span>
           </button>
@@ -1056,8 +1292,8 @@ function renderWizardStep(submission) {
   const idx = wizardSteps.findIndex(([id]) => id === state.wizardStep);
   const nav = `
     <div class="actions" style="margin-top: 16px">
-      ${idx > 0 ? `<button class="btn" data-action="wizard-prev">Back</button>` : ""}
-      ${idx < wizardSteps.length - 1 ? `<button class="btn primary" data-action="wizard-next">Next</button>` : ""}
+      ${idx > 0 ? `<button class="btn" data-action="wizard-prev" data-testid="wizard-back-btn">Back</button>` : ""}
+      ${idx < wizardSteps.length - 1 ? `<button class="btn primary" data-action="wizard-next" data-testid="wizard-next-btn">Next</button>` : ""}
     </div>
   `;
 
@@ -1066,24 +1302,24 @@ function renderWizardStep(submission) {
       return `
         <div class="field-grid">
           <div class="field"><label>Account</label><input value="${escapeAttr(account?.name || "")}" disabled /></div>
-          <div class="field"><label>Producer code</label><input data-submission-field="producerCode" value="${escapeAttr(submission.producerCode)}" /></div>
-          <div class="field"><label>Effective date</label><input type="date" data-submission-field="effective" value="${submission.effective}" /></div>
-          <div class="field"><label>Quote type</label><select data-submission-field="quoteType"><option ${submission.quoteType === "Full Application" ? "selected" : ""}>Full Application</option><option ${submission.quoteType === "Quick Quote" ? "selected" : ""}>Quick Quote</option></select></div>
+          <div class="field"><label>Producer code</label><input data-submission-field="producerCode" value="${escapeAttr(submission.producerCode)}" required data-testid="submission-producer-code-input" /><span class="field-error"></span></div>
+          <div class="field"><label>Quote type</label><select data-submission-field="quoteType" required data-testid="submission-quote-type-select">${optionSet(["Full Application", "Quick Quote"], submission.quoteType)}</select><span class="field-error"></span></div>
+          <div class="field"><label>Underwriting company</label><select data-submission-field="uwCompany" required data-testid="submission-uw-company-select">${optionSet(["Pinnacle Mutual", "Cascade Casualty", "Evergreen Commercial"], submission.uwCompany)}</select><span class="field-error"></span></div>
         </div>
         <h3>Product Offers</h3>
         <div class="choice-grid">
-          ${products.map((p) => `<button class="choice ${submission.lob === p.lob ? "active" : ""}" data-action="select-product" data-lob="${p.lob}"><b>${p.lob}</b><span>${p.detail}</span></button>`).join("")}
+          ${products.map((p) => `<button class="choice ${submission.lob === p.lob ? "active" : ""}" data-action="select-product" data-lob="${p.lob}" data-testid="product-${slug(p.lob)}-btn"><b>${p.lob}</b><span>${p.detail}</span></button>`).join("")}
         </div>
         ${nav}
       `;
     case "qualification":
       return `
-        <p class="muted">Pre-qualification questions screen for applicant risk and eligibility.</p>
+        <p class="muted">Pre-qualification checks determine whether the submission can proceed to quote or needs underwriting review.</p>
         <div class="field-grid">
-          <div class="field"><label>Applicant eligible for selected product?</label><select data-qualification="eligible"><option ${submission.qualifications.eligible === "Yes" ? "selected" : ""}>Yes</option><option ${submission.qualifications.eligible === "No" ? "selected" : ""}>No</option></select></div>
-          <div class="field"><label>More than two prior losses?</label><select data-qualification="priorLosses"><option ${submission.qualifications.priorLosses === "No" ? "selected" : ""}>No</option><option ${submission.qualifications.priorLosses === "Yes" ? "selected" : ""}>Yes</option></select></div>
-          <div class="field"><label>Hazardous operations?</label><select data-qualification="hazardous"><option ${submission.qualifications.hazardous === "No" ? "selected" : ""}>No</option><option ${submission.qualifications.hazardous === "Yes" ? "selected" : ""}>Yes</option></select></div>
-          <div class="field"><label>Underwriting company</label><select data-submission-field="uwCompany"><option>Pinnacle Mutual</option><option>Cascade Casualty</option><option>Evergreen Commercial</option></select></div>
+          <div class="field"><label>Any prior claims in last 3 years?</label><select data-submission-field="priorClaims" required data-testid="prior-claims-select">${optionSet(["No", "Yes"], submission.priorClaims)}</select><span class="field-error"></span></div>
+          <div class="field"><label>Credit score range</label><select data-submission-field="creditScoreRange" required data-testid="credit-score-range-select">${optionSet(["750+", "700-749", "650-699", "600-649", "Below 600"], submission.creditScoreRange)}</select><span class="field-error"></span></div>
+          <div class="field"><label>Years of driving experience</label><input type="number" min="0" data-number-field="yearsDrivingExperience" value="${submission.yearsDrivingExperience || 0}" required data-testid="driving-experience-input" /><span class="field-error"></span></div>
+          <div class="field"><label>Applicant eligible for selected product?</label><select data-qualification="eligible" required data-testid="applicant-eligible-select">${optionSet(["Yes", "No"], submission.qualifications.eligible)}</select><span class="field-error"></span></div>
         </div>
         ${nav}
       `;
@@ -1092,44 +1328,41 @@ function renderWizardStep(submission) {
         <div class="field-grid">
           <div class="field"><label>Primary named insured</label><input value="${escapeAttr(account?.name || "")}" disabled /></div>
           <div class="field"><label>Account number</label><input value="${submission.accountId}" disabled /></div>
-          <div class="field"><label>Effective date</label><input type="date" data-submission-field="effective" value="${submission.effective}" /></div>
-          <div class="field"><label>Expiration date</label><input type="date" data-submission-field="expiration" value="${submission.expiration}" /></div>
-          <div class="field"><label>Producer</label><input data-submission-field="producer" value="${escapeAttr(submission.producer)}" /></div>
-          <div class="field"><label>Underwriting company</label><input data-submission-field="uwCompany" value="${escapeAttr(submission.uwCompany)}" /></div>
+          <div class="field"><label>Policy Effective Date</label><input data-date-field="effective" value="${displayDate(submission.effective)}" placeholder="DD/MM/YYYY" required data-validate="date" data-no-past="true" data-testid="policy-effective-date-input" /><span class="field-error"></span></div>
+          <div class="field"><label>Policy Expiration Date</label><input value="${displayDate(submission.expiration || plusYear(submission.effective))}" disabled data-testid="policy-expiration-date-input" /></div>
+          <div class="field"><label>Payment Plan</label><select data-submission-field="paymentPlan" required data-testid="payment-plan-select">${optionSet(["Annual", "Semi-Annual", "Quarterly", "Monthly"], submission.paymentPlan)}</select><span class="field-error"></span></div>
+          <div class="field"><label>Producer</label><input data-submission-field="producer" value="${escapeAttr(submission.producer)}" required data-testid="submission-producer-input" /><span class="field-error"></span></div>
         </div>
         ${nav}
       `;
-    case "details":
+    case "coverage":
+      const previewPremium = calculatePremium(submission);
       return `
-        <p class="muted">Line-specific screen. Fields change by product in a real implementation.</p>
+        <p class="muted">Coverage selections drive a simple training premium formula.</p>
         <div class="field-grid cols-3">
-          <div class="field"><label>Annual revenue</label><input type="number" data-number-field="revenue" value="${submission.revenue || 0}" /></div>
-          <div class="field"><label>Payroll</label><input type="number" data-number-field="payroll" value="${submission.payroll || 0}" /></div>
-          <div class="field"><label>Locations</label><input type="number" data-number-field="locations" value="${submission.locations || 1}" /></div>
-          <div class="field"><label>Vehicles</label><input type="number" data-number-field="vehicles" value="${submission.vehicles || 0}" /></div>
-          <div class="field"><label>Prior losses</label><input type="number" data-number-field="losses" value="${submission.losses || 0}" /></div>
-          <div class="field"><label>Coverage package</label><select data-submission-field="coveragePackage"><option>Standard</option><option>Enhanced</option><option>High deductible</option></select></div>
+          <div class="field"><label>Coverage Type</label><select data-submission-field="coverageType" required data-testid="coverage-type-select">${optionSet(["Liability Only", "Full Coverage", "Liability + Property", "Workers Comp Statutory"], submission.coverageType)}</select><span class="field-error"></span></div>
+          <div class="field"><label>Coverage Limit</label><select data-number-field="coverageLimit" required data-testid="coverage-limit-select">${optionSet(["100000", "250000", "500000", "1000000", "2000000"], String(submission.coverageLimit || 250000))}</select><span class="field-error"></span></div>
+          <div class="field"><label>Deductible</label><select data-number-field="deductible" required data-testid="deductible-select">${optionSet(["250", "500", "1000", "2500", "5000"], String(submission.deductible || 500))}</select><span class="field-error"></span></div>
+          <div class="field"><label>Annual revenue</label><input type="number" data-number-field="revenue" value="${submission.revenue || 0}" min="0" data-testid="annual-revenue-input" /></div>
+          <div class="field"><label>Payroll</label><input type="number" data-number-field="payroll" value="${submission.payroll || 0}" min="0" data-testid="payroll-input" /></div>
+          <div class="field"><label>Vehicles</label><input type="number" data-number-field="vehicles" value="${submission.vehicles || 0}" min="0" data-testid="vehicles-input" /></div>
         </div>
-        ${nav}
-      `;
-    case "risk":
-      return `
-        <div class="actions" style="margin-bottom: 12px">
-          <button class="btn" data-action="run-risk">Run Risk Analysis</button>
-          <button class="btn success" data-action="approve-issues">Approve Open Issues</button>
-        </div>
-        ${renderRiskIssues(state.uwIssues.filter((i) => i.submissionId === submission.id), false)}
+        <div class="quote-total compact-quote" style="margin-top: 12px"><span>Estimated premium</span><b>${money(previewPremium)}</b></div>
         ${nav}
       `;
     case "quote":
+      const quotePremium = submission.premium || calculatePremium(submission);
       return `
         <div class="grid cols-2">
-          <div class="quote-total"><span>Current quoted premium</span><b>${submission.premium ? money(submission.premium) : "Not quoted"}</b></div>
+          <div class="quote-total"><span>Calculated premium</span><b>${money(quotePremium)}</b><span>${submission.quoteNumber ? `Quote ${escapeHtml(submission.quoteNumber)}` : "Quote number not generated"}</span></div>
           <div class="panel flat">
             <div class="panel-head"><h3>Quote Actions</h3></div>
             <div class="panel-body actions">
-              <button class="btn primary" data-action="generate-quote">Generate Quote</button>
-              <button class="btn" data-action="new-version">New Version</button>
+              <button class="btn primary" data-action="generate-quote" data-testid="generate-quote-btn">Generate Quote</button>
+              <button class="btn success" data-action="bind-submission" data-testid="quote-bind-btn">Bind</button>
+              <button class="btn danger" data-action="close-submission" data-close-status="Declined" data-testid="quote-decline-btn">Decline</button>
+              <button class="btn danger" data-action="close-submission" data-close-status="Withdrawn" data-testid="quote-withdraw-btn">Withdraw</button>
+              <button class="btn" data-action="close-submission" data-close-status="Not Taken" data-testid="quote-not-taken-btn">Not Taken</button>
             </div>
           </div>
         </div>
@@ -1138,23 +1371,25 @@ function renderWizardStep(submission) {
         ${nav}
       `;
     case "bind":
+      const issuedPolicy = state.policies.find((p) => p.accountId === submission.accountId && p.effective === submission.effective && p.premium === submission.premium);
       return `
         <div class="grid cols-2">
           <div class="panel flat">
-            <div class="panel-head"><h3>Bind Options</h3></div>
+            <div class="panel-head"><h3>Policy Summary</h3></div>
             <div class="panel-body summary-list">
-              <div class="summary-row"><span>Quote status</span><strong>${submission.status}</strong></div>
-              <div class="summary-row"><span>Open UW issues</span><strong>${state.uwIssues.filter((i) => i.submissionId === submission.id && i.status === "Open").length}</strong></div>
+              <div class="summary-row"><span>Policy number</span><strong>${issuedPolicy?.number || "Generated at issue"}</strong></div>
+              <div class="summary-row"><span>Quote number</span><strong>${submission.quoteNumber || "Not generated"}</strong></div>
+              <div class="summary-row"><span>Product</span><strong>${escapeHtml(submission.lob)}</strong></div>
+              <div class="summary-row"><span>Term</span><strong>${displayDate(submission.effective)} - ${displayDate(submission.expiration)}</strong></div>
               <div class="summary-row"><span>Premium</span><strong>${submission.premium ? money(submission.premium) : "Not quoted"}</strong></div>
             </div>
           </div>
           <div class="panel flat">
             <div class="panel-head"><h3>Finalize</h3></div>
             <div class="panel-body actions">
-              <button class="btn success" data-action="bind-submission">Bind Only</button>
-              <button class="btn primary" data-action="issue-submission">Issue Policy</button>
-              <button class="btn danger" data-action="close-submission" data-close-status="Not Taken">Not Taken</button>
-              <button class="btn danger" data-action="close-submission" data-close-status="Declined">Decline</button>
+              <button class="btn success" data-action="bind-submission" data-testid="bind-only-btn">Bind Only</button>
+              <button class="btn primary" data-action="issue-submission" data-testid="issue-policy-btn">Issue Policy</button>
+              <button class="btn" data-action="download-policy" data-testid="download-policy-btn">Download Policy</button>
             </div>
           </div>
         </div>
@@ -1166,7 +1401,7 @@ function renderWizardStep(submission) {
 
 function renderSearch() {
   const q = state.searchText.trim().toLowerCase();
-  const accountResults = state.accounts.filter((a) => !q || [a.id, a.name, a.producer, a.producerCode].join(" ").toLowerCase().includes(q));
+  const accountResults = state.accounts.filter((a) => !q || [a.id, a.name, a.email, a.phone, a.producer, a.producerCode].join(" ").toLowerCase().includes(q));
   const policyResults = state.policies.filter((p) => !q || [p.number, p.lob, p.status, getAccount(p.accountId)?.name].join(" ").toLowerCase().includes(q));
   const submissionResults = state.submissions.filter((s) => !q || [s.id, s.lob, s.status, getAccount(s.accountId)?.name].join(" ").toLowerCase().includes(q));
   return `
@@ -1178,7 +1413,10 @@ function renderSearch() {
     </div>
     <div class="panel">
       <div class="panel-body">
-        <input class="search-input" data-search placeholder="Search account, policy, submission, producer code" value="${escapeAttr(state.searchText)}" autofocus />
+        <div class="search-inline">
+          <input class="search-input" data-search placeholder="Search account, policy, submission, email, phone, status" value="${escapeAttr(state.searchText)}" autofocus data-testid="global-search-input" />
+          <button class="btn" data-action="run-search" data-testid="global-search-btn">Search</button>
+        </div>
       </div>
     </div>
     <section class="grid cols-3" style="margin-top: 14px">
@@ -1205,6 +1443,46 @@ function renderTeam() {
           <div class="table-wrap">${activityTable(items, true)}</div>
         </div>
       `).join("")}
+    </section>
+  `;
+}
+
+function renderReports() {
+  const policyCounts = countByStatus(state.policies);
+  const submissionByProduct = groupBy(state.submissions, "lob");
+  const newAccountsThisMonth = state.accounts.filter((account) => sameMonth(account.created, isoToday())).length;
+  const policyRows = ["In Force", "Bound", "Draft", "Cancelled", "Expired"].map((statusName) => [statusName, policyCounts[statusName] || 0]);
+  const submissionRows = Object.entries(submissionByProduct).map(([product, items]) => [product, items.length]);
+  return `
+    <div class="page-head">
+      <div class="page-title">
+        <h1>Reports</h1>
+        <p>Operational reporting for policies, submissions, and new account activity.</p>
+      </div>
+      <div class="actions"><button class="btn" data-action="export-csv" data-testid="reports-export-csv-btn">Export CSV</button></div>
+    </div>
+    <section class="grid cols-3">
+      <div class="panel">
+        <div class="panel-head"><h2>Policy Summary</h2><span>By status</span></div>
+        <div class="panel-body">
+          ${barChart(policyRows, "policy-status")}
+          ${table(["Status", "Count"], policyRows)}
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>Submission Report</h2><span>By product type</span></div>
+        <div class="panel-body">
+          ${barChart(submissionRows, "submission-product")}
+          ${table(["Product", "Count"], submissionRows)}
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>Account Report</h2><span>This month</span></div>
+        <div class="panel-body">
+          <div class="metric-card"><span>New accounts</span><strong>${newAccountsThisMonth}</strong></div>
+          ${table(["Metric", "Value"], [["New accounts this month", newAccountsThisMonth], ["Total accounts", state.accounts.length], ["Commercial accounts", state.accounts.filter((a) => a.type === "Commercial" || a.type === "Company").length]])}
+        </div>
+      </div>
     </section>
   `;
 }
@@ -1240,9 +1518,10 @@ function renderAdmin() {
 }
 
 function accountTable(accounts) {
-  const rows = sortRows(filterRows(accounts, (a) => [a.id, a.name, a.producer, a.producerCode, a.status]), "accounts", {
+  const rows = sortRows(filterRows(accounts, (a) => [a.id, a.name, a.email, a.phone, a.producer, a.producerCode, a.status]), "accounts", {
     account: (a) => a.id,
     name: (a) => a.name,
+    contact: (a) => `${a.email} ${a.phone}`,
     status: (a) => a.status,
     producer: (a) => a.producerCode
   });
@@ -1250,14 +1529,15 @@ function accountTable(accounts) {
   const page = paginate("accounts", rows);
   return `
     <table class="enterprise-table">
-      <thead><tr>${sortHeader("Account", "accounts", "account")}${sortHeader("Name", "accounts", "name")}${sortHeader("Status", "accounts", "status")}${sortHeader("Producer", "accounts", "producer")}</tr></thead>
+      <thead><tr>${sortHeader("Account", "accounts", "account")}${sortHeader("Name", "accounts", "name")}${sortHeader("Contact", "accounts", "contact")}${sortHeader("Status", "accounts", "status")}${sortHeader("Producer", "accounts", "producer")}</tr></thead>
       <tbody>
-        ${page.items.map((a) => `
-          <tr class="clickable" data-action="select-account" data-account-id="${a.id}">
-            <td><strong>${a.id}</strong></td>
-            <td>${escapeHtml(a.name)}<br /><span class="muted">${escapeHtml(a.type)} - ${escapeHtml(a.tier)}</span></td>
+        ${page.items.map((a, index) => `
+          <tr class="clickable" data-action="select-account" data-account-id="${a.id}" data-row-key="${escapeAttr(a.id)}" data-testid="account-row-${page.start + index}">
+            <td><strong>${highlight(a.id)}</strong></td>
+            <td>${highlight(a.name)}<br /><span class="muted">${escapeHtml(a.type)} - ${escapeHtml(a.tier)}</span></td>
+            <td>${highlight(a.email)}<br /><span class="muted">${highlight(a.phone)}</span></td>
             <td>${status(a.status)}</td>
-            <td>${escapeHtml(a.producerCode)}<br /><span class="muted">${escapeHtml(a.producer)}</span></td>
+            <td>${highlight(a.producerCode)}<br /><span class="muted">${highlight(a.producer)}</span></td>
           </tr>
         `).join("")}
       </tbody>
@@ -1281,10 +1561,10 @@ function policyTable(policies) {
       <thead><tr>${sortHeader("Policy", "policies", "policy")}${sortHeader("Account", "policies", "account")}${sortHeader("Line", "policies", "line")}${sortHeader("Status", "policies", "status")}${sortHeader("Premium", "policies", "premium")}</tr></thead>
       <tbody>
         ${page.items.map((p) => `
-          <tr class="clickable" data-action="select-policy" data-policy-number="${p.number}">
-            <td><strong>${p.number}</strong><br /><span class="muted">${date(p.effective)} - ${date(p.expiration)}</span></td>
-            <td>${escapeHtml(getAccount(p.accountId)?.name || p.accountId)}</td>
-            <td>${escapeHtml(p.lob)}</td>
+          <tr class="clickable" data-action="select-policy" data-policy-number="${p.number}" data-testid="policy-row-${slug(p.number)}">
+            <td><strong>${highlight(p.number)}</strong><br /><span class="muted">${date(p.effective)} - ${date(p.expiration)}</span></td>
+            <td>${highlight(getAccount(p.accountId)?.name || p.accountId)}</td>
+            <td>${highlight(p.lob)}</td>
             <td>${status(p.status)}</td>
             <td>${p.premium ? money(p.premium) : "-"}</td>
           </tr>
@@ -1311,10 +1591,10 @@ function submissionTable(submissions) {
       <thead><tr>${sortHeader("Submission", "submissions", "submission")}${sortHeader("Account", "submissions", "account")}${sortHeader("Line", "submissions", "line")}${sortHeader("Quote Type", "submissions", "quoteType")}${sortHeader("Status", "submissions", "status")}${sortHeader("Premium", "submissions", "premium")}</tr></thead>
       <tbody>
         ${page.items.map((s) => `
-          <tr class="clickable" data-action="select-submission" data-submission-id="${s.id}">
-            <td><strong>${s.id}</strong><br /><span class="muted">${date(s.effective)}</span></td>
-            <td>${escapeHtml(getAccount(s.accountId)?.name || s.accountId)}</td>
-            <td>${escapeHtml(s.lob)}</td>
+          <tr class="clickable" data-action="select-submission" data-submission-id="${s.id}" data-testid="submission-row-${slug(s.id)}">
+            <td><strong>${highlight(s.id)}</strong><br /><span class="muted">${date(s.effective)}</span></td>
+            <td>${highlight(getAccount(s.accountId)?.name || s.accountId)}</td>
+            <td>${highlight(s.lob)}</td>
             <td>${escapeHtml(s.quoteType)}</td>
             <td>${status(s.status)}</td>
             <td>${s.premium ? money(s.premium) : "-"}</td>
@@ -1341,14 +1621,14 @@ function transactionTable(transactions) {
     <table class="enterprise-table">
       <thead><tr>${sortHeader("Transaction", "transactions", "transaction")}${sortHeader("Policy / Job", "transactions", "policy")}${sortHeader("Type", "transactions", "type")}${sortHeader("Status", "transactions", "status")}${sortHeader("Effective", "transactions", "effective")}${sortHeader("Premium", "transactions", "premium")}</tr></thead>
       <tbody>
-        ${page.items.map((t) => `<tr><td><strong>${t.id}</strong></td><td>${escapeHtml(t.policyNumber)}</td><td>${escapeHtml(t.type)}</td><td>${status(t.status)}</td><td>${date(t.effective)}</td><td>${t.premium ? money(t.premium) : "-"}</td></tr>`).join("")}
+        ${page.items.map((t) => `<tr data-testid="transaction-row-${slug(t.id)}"><td><strong>${highlight(t.id)}</strong></td><td>${highlight(t.policyNumber)}</td><td>${highlight(t.type)}</td><td>${status(t.status)}</td><td>${date(t.effective)}</td><td>${t.premium ? money(t.premium) : "-"}</td></tr>`).join("")}
       </tbody>
     </table>
     ${page.footer}
   `;
 }
 
-function activityTable(activities, showAccount) {
+function activityTable(activities, showAccount, showActions = false) {
   const rows = sortRows(filterRows(activities, (a) => [a.subject, a.priority, a.status, a.assignedTo, a.queue, getAccount(a.accountId)?.name]), "activities", {
     subject: (a) => a.subject,
     account: (a) => getAccount(a.accountId)?.name || "",
@@ -1361,21 +1641,109 @@ function activityTable(activities, showAccount) {
   const page = paginate("activities", rows);
   return `
     <table class="enterprise-table">
-      <thead><tr>${sortHeader("Subject", "activities", "subject")}${showAccount ? sortHeader("Account", "activities", "account") : ""}${sortHeader("Priority", "activities", "priority")}${sortHeader("Assigned", "activities", "assigned")}${sortHeader("Due", "activities", "due")}${sortHeader("Status", "activities", "status")}</tr></thead>
+      <thead><tr>${sortHeader("Subject", "activities", "subject")}${showAccount ? sortHeader("Account", "activities", "account") : ""}${sortHeader("Priority", "activities", "priority")}${sortHeader("Assigned", "activities", "assigned")}${sortHeader("Due", "activities", "due")}${sortHeader("Status", "activities", "status")}${showActions ? "<th>Actions</th>" : ""}</tr></thead>
       <tbody>
         ${page.items.map((a) => `
-          <tr>
-            <td><strong>${escapeHtml(a.subject)}</strong><br /><span class="muted">${escapeHtml(a.policyNumber)}</span></td>
-            ${showAccount ? `<td>${escapeHtml(getAccount(a.accountId)?.name || a.accountId)}</td>` : ""}
+          <tr data-testid="activity-row-${slug(a.id)}">
+            <td><strong>${highlight(a.subject)}</strong><br /><span class="muted">${highlight(a.policyNumber)}</span></td>
+            ${showAccount ? `<td>${highlight(getAccount(a.accountId)?.name || a.accountId)}</td>` : ""}
             <td>${status(a.priority)}</td>
             <td>${escapeHtml(a.assignedTo)}</td>
             <td>${date(a.due)}</td>
             <td>${status(a.status)}</td>
+            ${showActions ? `<td><div class="table-actions">${queueActionButtons(a.id, "activity")}</div></td>` : ""}
           </tr>
         `).join("")}
       </tbody>
     </table>
     ${page.footer}
+  `;
+}
+
+function submissionQueueTable(submissions) {
+  const rows = sortRows(submissions, "submissions", {
+    submission: (s) => s.id,
+    account: (s) => getAccount(s.accountId)?.name || "",
+    line: (s) => s.lob,
+    status: (s) => s.status,
+    premium: (s) => s.premium
+  });
+  return `
+    <table class="enterprise-table">
+      <thead><tr>${sortHeader("Submission", "submissions", "submission")}${sortHeader("Account", "submissions", "account")}${sortHeader("Product", "submissions", "line")}${sortHeader("Status", "submissions", "status")}${sortHeader("Premium", "submissions", "premium")}<th>Actions</th></tr></thead>
+      <tbody>
+        ${rows.map((s) => `
+          <tr data-testid="queue-submission-row-${slug(s.id)}">
+            <td><strong>${highlight(s.id)}</strong><br /><span class="muted">${displayDate(s.effective)}</span></td>
+            <td>${highlight(getAccount(s.accountId)?.name || s.accountId)}</td>
+            <td>${highlight(s.lob)}</td>
+            <td>${status(s.status)}</td>
+            <td>${s.premium ? money(s.premium) : "-"}</td>
+            <td><div class="table-actions">${queueActionButtons(s.id, "submission")}</div></td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function renewalQueueTable(transactions) {
+  const rows = sortRows(transactions, "transactions", {
+    policy: (t) => t.policyNumber,
+    account: (t) => getAccount(t.accountId)?.name || "",
+    status: (t) => t.status,
+    effective: (t) => t.effective,
+    premium: (t) => t.premium
+  });
+  return `
+    <table class="enterprise-table">
+      <thead><tr>${sortHeader("Policy", "transactions", "policy")}${sortHeader("Account", "transactions", "account")}${sortHeader("Renewal Date", "transactions", "effective")}${sortHeader("Status", "transactions", "status")}<th>Actions</th></tr></thead>
+      <tbody>
+        ${rows.map((t) => `
+          <tr data-testid="queue-renewal-row-${slug(t.id)}">
+            <td><strong>${highlight(t.policyNumber)}</strong></td>
+            <td>${highlight(getAccount(t.accountId)?.name || t.accountId)}</td>
+            <td>${date(t.effective)}</td>
+            <td>${status(t.status)}</td>
+            <td><div class="table-actions">${queueActionButtons(t.id, "transaction")}</div></td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function underwritingQueueTable(issues) {
+  const rows = sortRows(issues, "underwriting", {
+    title: (i) => i.title,
+    account: (i) => getAccount(i.accountId)?.name || "",
+    status: (i) => i.status,
+    blocking: (i) => i.blocking
+  });
+  return `
+    <table class="enterprise-table">
+      <thead><tr>${sortHeader("Referral", "underwriting", "title")}${sortHeader("Account", "underwriting", "account")}${sortHeader("Blocking", "underwriting", "blocking")}${sortHeader("Status", "underwriting", "status")}<th>Actions</th></tr></thead>
+      <tbody>
+        ${rows.map((issue) => `
+          <tr data-testid="underwriting-row-${slug(issue.id)}">
+            <td><strong>${highlight(issue.title)}</strong><br /><span class="muted">${highlight(issue.reason)}</span></td>
+            <td>${highlight(getAccount(issue.accountId)?.name || issue.accountId)}</td>
+            <td>${escapeHtml(issue.blocking)}</td>
+            <td>${status(issue.status)}</td>
+            <td><div class="table-actions">${queueActionButtons(issue.id, "underwriting")}</div></td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function queueActionButtons(id, type) {
+  const safeId = slug(id);
+  return `
+    <button class="btn compact" data-action="queue-view" data-queue-type="${type}" data-row-id="${escapeAttr(id)}" data-testid="${type}-${safeId}-view-btn">View</button>
+    <button class="btn compact success" data-action="queue-approve" data-queue-type="${type}" data-row-id="${escapeAttr(id)}" data-testid="${type}-${safeId}-approve-btn">Approve</button>
+    <button class="btn compact danger" data-action="queue-reject" data-queue-type="${type}" data-row-id="${escapeAttr(id)}" data-testid="${type}-${safeId}-reject-btn">Reject</button>
   `;
 }
 
@@ -1393,7 +1761,7 @@ function driverTable(drivers) {
       <thead><tr>${sortHeader("Driver", "drivers", "driver")}${sortHeader("Name", "drivers", "name")}${sortHeader("License", "drivers", "license")}${sortHeader("Status", "drivers", "status")}</tr></thead>
       <tbody>
         ${page.items.map((d) => `
-          <tr class="clickable ${state.selectedDriverId === d.id ? "selected-row" : ""}" data-action="select-driver" data-driver-id="${d.id}">
+          <tr class="clickable ${state.selectedDriverId === d.id ? "selected-row" : ""}" data-action="select-driver" data-driver-id="${d.id}" data-testid="driver-row-${slug(d.id)}">
             <td><strong>${d.id}</strong></td>
             <td>${escapeHtml(d.name)}<br /><span class="muted">${escapeHtml(d.relationship)}</span></td>
             <td>${escapeHtml(d.licenseState)} ${escapeHtml(d.licenseNumber)}</td>
@@ -1421,7 +1789,7 @@ function claimTable(claims) {
     <table class="enterprise-table">
       <thead><tr>${sortHeader("Claim", "claims", "claim")}${sortHeader("Policy", "claims", "policy")}${sortHeader("Claimant", "claims", "claimant")}${sortHeader("Type", "claims", "type")}${sortHeader("Status", "claims", "status")}${sortHeader("Incurred", "claims", "incurred")}</tr></thead>
       <tbody>
-        ${page.items.map((c) => `<tr><td><strong>${c.id}</strong><br /><span class="muted">${date(c.lossDate)}</span></td><td>${escapeHtml(c.policyNumber)}</td><td>${escapeHtml(c.claimant)}</td><td>${escapeHtml(c.type)}</td><td>${status(c.status)}</td><td>${money(c.incurred)}</td></tr>`).join("")}
+        ${page.items.map((c) => `<tr data-testid="claim-row-${slug(c.id)}"><td><strong>${highlight(c.id)}</strong><br /><span class="muted">${date(c.lossDate)}</span></td><td>${highlight(c.policyNumber)}</td><td>${highlight(c.claimant)}</td><td>${highlight(c.type)}</td><td>${status(c.status)}</td><td>${money(c.incurred)}</td></tr>`).join("")}
       </tbody>
     </table>
     ${page.footer}
@@ -1470,7 +1838,7 @@ function table(headers, rows) {
     <table class="enterprise-table">
       <thead><tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead>
       <tbody>
-        ${rows.map((row) => `<tr>${row.map((cell) => `<td>${typeof cell === "string" && cell.includes("<") ? cell : escapeHtml(String(cell))}</td>`).join("")}</tr>`).join("")}
+        ${rows.map((row, index) => `<tr data-testid="table-row-${index}">${row.map((cell) => `<td>${typeof cell === "string" && cell.includes("<") ? cell : highlight(String(cell))}</td>`).join("")}</tr>`).join("")}
       </tbody>
     </table>
   `;
@@ -1479,10 +1847,12 @@ function table(headers, rows) {
 function tableToolbar(scope, placeholder) {
   return `
     <div class="table-toolbar" data-table-scope="${scope}">
-      <input class="search-input compact" data-search placeholder="${escapeAttr(placeholder)}" value="${escapeAttr(state.searchText)}" />
-      <select aria-label="Filter ${escapeAttr(scope)}">
+      <input class="search-input compact" data-search placeholder="${escapeAttr(placeholder)}" value="${escapeAttr(state.searchText)}" data-testid="${slug(scope)}-search-input" />
+      <select aria-label="Filter ${escapeAttr(scope)}" data-testid="${slug(scope)}-status-filter">
         <option>All statuses</option>
         <option>Open</option>
+        <option>Pending</option>
+        <option>Closed</option>
         <option>Quoted</option>
         <option>Approved</option>
       </select>
@@ -1493,7 +1863,7 @@ function tableToolbar(scope, placeholder) {
 function sortHeader(label, scope, key) {
   const active = state.sortScope === scope && state.sortKey === key;
   const arrow = active ? (state.sortDir === "asc" ? " up" : " down") : "";
-  return `<th><button class="th-sort${arrow}" data-action="sort-table" data-scope="${scope}" data-key="${key}">${escapeHtml(label)}</button></th>`;
+  return `<th><button class="th-sort${arrow}" data-action="sort-table" data-scope="${scope}" data-key="${key}" data-testid="sort-${slug(scope)}-${slug(key)}-btn">${escapeHtml(label)}</button></th>`;
 }
 
 function filterRows(rows, picker) {
@@ -1514,18 +1884,19 @@ function sortRows(rows, scope, accessors) {
 }
 
 function paginate(scope, rows) {
-  const pageSize = 6;
+  const pageSize = 10;
   const pages = Math.max(1, Math.ceil(rows.length / pageSize));
   const current = Math.min(Math.max(1, state.tablePages[scope] || 1), pages);
   const start = (current - 1) * pageSize;
   return {
+    start,
     items: rows.slice(start, start + pageSize),
     footer: `
       <div class="table-footer">
         <span>${rows.length} rows - Page ${current} of ${pages}</span>
         <div class="pagination">
-          <button class="btn compact" data-action="page-prev" data-scope="${scope}" ${current === 1 ? "disabled" : ""}>Previous</button>
-          <button class="btn compact" data-action="page-next" data-scope="${scope}" ${current === pages ? "disabled" : ""}>Next</button>
+          <button class="btn compact" data-action="page-prev" data-scope="${scope}" data-testid="${slug(scope)}-page-prev-btn" ${current === 1 ? "disabled" : ""}>Previous</button>
+          <button class="btn compact" data-action="page-next" data-scope="${scope}" data-testid="${slug(scope)}-page-next-btn" ${current === pages ? "disabled" : ""}>Next</button>
         </div>
       </div>
     `
@@ -1536,11 +1907,11 @@ function renderStickyActions() {
   if (!state.user) return "";
   return `
     <div class="sticky-actions" role="toolbar" aria-label="Workflow actions">
-      <button class="btn" data-action="driver-save">Save</button>
-      <button class="btn" data-action="generate-quote">Quote</button>
-      <button class="btn success" data-action="bind-submission">Bind</button>
-      <button class="btn primary" data-action="issue-submission">Submit</button>
-      <button class="btn ghost" data-action="cancel-action">Cancel</button>
+      <button class="btn" data-action="driver-save" data-testid="sticky-save-btn">Save</button>
+      <button class="btn" data-action="generate-quote" data-testid="sticky-quote-btn">Quote</button>
+      <button class="btn success" data-action="bind-submission" data-testid="sticky-bind-btn">Bind</button>
+      <button class="btn primary" data-action="issue-submission" data-testid="sticky-submit-btn">Submit</button>
+      <button class="btn ghost" data-action="cancel-action" data-testid="sticky-cancel-btn">Cancel</button>
     </div>
   `;
 }
@@ -1550,22 +1921,22 @@ function renderModal() {
   if (state.activeModal === "driver") {
     return `
       <div class="modal-backdrop" data-action="close-modal">
-        <form class="modal" data-form="new-driver" onclick="event.stopPropagation()">
+        <form class="modal" data-form="new-driver" onclick="event.stopPropagation()" novalidate>
           <div class="modal-head">
             <h2>Add Driver</h2>
-            <button class="btn icon compact" type="button" data-action="close-modal" aria-label="Close">x</button>
+            <button class="btn icon compact" type="button" data-action="close-modal" aria-label="Close" data-testid="driver-modal-close-btn">x</button>
           </div>
           <div class="field-grid">
-            <div class="field"><label>Full name</label><input name="name" required /></div>
-            <div class="field"><label>Date of birth</label><input type="date" name="dob" required /></div>
-            <div class="field"><label>License number</label><input name="licenseNumber" required /></div>
-            <div class="field"><label>License state</label><select name="licenseState">${optionSet(["CA", "WI", "WA", "TX", "NY", "IL"], "CA")}</select></div>
-            <div class="field"><label>Policy / Job</label><input name="policyNumber" value="${escapeAttr(state.selectedPolicyId)}" /></div>
-            <div class="field"><label>Relationship</label><select name="relationship">${optionSet(["Named Insured", "Spouse", "Employee Driver", "Household Driver"], "Employee Driver")}</select></div>
+            <div class="field"><label>Full name</label><input name="name" required data-testid="driver-name-input" /><span class="field-error"></span></div>
+            <div class="field"><label>Date of birth</label><input name="dob" placeholder="DD/MM/YYYY" required data-validate="date" data-adult="true" data-testid="driver-dob-input" /><span class="field-error"></span></div>
+            <div class="field"><label>License number</label><input name="licenseNumber" required data-testid="driver-license-number-input" /><span class="field-error"></span></div>
+            <div class="field"><label>License state</label><select name="licenseState" data-testid="driver-license-state-select">${optionSet(["CA", "WI", "WA", "TX", "NY", "IL"], "CA")}</select><span class="field-error"></span></div>
+            <div class="field"><label>Policy / Job</label><input name="policyNumber" value="${escapeAttr(state.selectedPolicyId)}" data-testid="driver-policy-number-input" /><span class="field-error"></span></div>
+            <div class="field"><label>Relationship</label><select name="relationship" data-testid="driver-relationship-select">${optionSet(["Named Insured", "Spouse", "Employee Driver", "Household Driver"], "Employee Driver")}</select><span class="field-error"></span></div>
           </div>
           <div class="modal-actions">
-            <button class="btn ghost" type="button" data-action="close-modal">Cancel</button>
-            <button class="btn primary" type="submit">Add Driver</button>
+            <button class="btn ghost" type="button" data-action="close-modal" data-testid="driver-modal-cancel-btn">Cancel</button>
+            <button class="btn primary" type="submit" data-testid="driver-form-submit-btn">Add Driver</button>
           </div>
         </form>
       </div>
@@ -1583,16 +1954,45 @@ function handleClick(event) {
   if (!target) return;
   const action = target.dataset.action;
 
+  if (action === "fill-demo-login") {
+    const user = demoUsers.find((item) => item.username === target.dataset.username);
+    const form = target.closest("form");
+    if (user && form) {
+      form.elements.username.value = user.username;
+      form.elements.password.value = user.password;
+      state.loginError = "";
+      clearFormErrors(form);
+    }
+    return;
+  }
+
   if (action === "tab") {
+    if (state.activeTab !== target.dataset.tab) startLoading();
     state.activeTab = target.dataset.tab;
     state.searchText = "";
+    state.notificationOpen = false;
   }
 
   if (action === "toggle-sidebar") state.sidebarCollapsed = !state.sidebarCollapsed;
-  if (action === "logout") state.user = null;
+  if (action === "toggle-notifications") state.notificationOpen = !state.notificationOpen;
+  if (action === "mark-notifications-read") state.notifications.forEach((notification) => (notification.read = true));
+  if (action === "mark-notification-read") {
+    const notification = state.notifications.find((item) => item.id === target.dataset.notificationId);
+    if (notification) notification.read = true;
+  }
+  if (action === "logout") {
+    state.user = null;
+    state.loginError = "";
+    toast("Signed out.", "info", false);
+  }
   if (action === "modal") state.activeModal = target.dataset.modal;
   if (action === "close-modal") state.activeModal = null;
   if (action === "workflow-toast") toast("Workflow step is shown in the submission wizard.");
+  if (action === "run-search") toast("Search results updated.", "info");
+  if (action === "desktop-queue") {
+    state.desktopQueueTab = target.dataset.queue;
+    state.tablePages.activities = 1;
+  }
 
   if (action === "open-new-account") {
     state.activeTab = "accounts";
@@ -1625,12 +2025,20 @@ function handleClick(event) {
 
   if (action === "account-section") state.accountSection = target.dataset.section;
   if (action === "policy-section") state.policySection = target.dataset.section;
-  if (action === "wizard-step") state.wizardStep = target.dataset.step;
+  if (action === "wizard-step") {
+    const nextIndex = wizardSteps.findIndex(([id]) => id === target.dataset.step);
+    const currentIndex = wizardSteps.findIndex(([id]) => id === state.wizardStep);
+    if (nextIndex > currentIndex && !validateWizardStep()) return;
+    state.wizardStep = target.dataset.step;
+  }
   if (action === "open-wizard-step") {
     state.activeTab = "submission";
     state.wizardStep = target.dataset.step;
   }
-  if (action === "wizard-next") moveWizard(1);
+  if (action === "wizard-next") {
+    if (!validateWizardStep()) return;
+    moveWizard(1);
+  }
   if (action === "wizard-prev") moveWizard(-1);
   if (action === "sort-table") {
     const sameColumn = state.sortScope === target.dataset.scope && state.sortKey === target.dataset.key;
@@ -1652,14 +2060,28 @@ function handleClick(event) {
   if (action === "new-version") createQuoteVersion();
   if (action === "bind-submission") bindSubmission(false);
   if (action === "issue-submission") bindSubmission(true);
-  if (action === "close-submission") closeSubmission(target.dataset.closeStatus);
+  if (action === "close-submission") {
+    if (!confirm(`Confirm ${target.dataset.closeStatus} for this submission?`)) return;
+    closeSubmission(target.dataset.closeStatus);
+  }
   if (action === "policy-action") startPolicyAction(target.dataset.kind);
+  if (action === "download-policy") toast("Policy document download prepared for training demo.", "success");
+  if (action === "export-csv") toast("CSV export prepared for training demo.", "success");
+  if (action === "queue-view") viewQueueItem(target.dataset.queueType, target.dataset.rowId);
+  if (action === "queue-approve") updateQueueItem(target.dataset.queueType, target.dataset.rowId, "Approved");
+  if (action === "queue-reject") {
+    if (!confirm("Reject this queue item?")) return;
+    updateQueueItem(target.dataset.queueType, target.dataset.rowId, "Closed");
+  }
   if (action === "add-note") addNote();
   if (action === "add-document") addDocument();
   if (action === "driver-verify") verifyDriver();
-  if (action === "driver-save") toast("Changes saved.");
-  if (action === "cancel-action") toast("Action cancelled.");
+  if (action === "driver-save") saveDriverUpdate();
+  if (action === "cancel-action") {
+    if (confirm("Cancel the current action?")) toast("Action cancelled.", "warning");
+  }
   if (action === "reset-demo") {
+    if (!confirm("Reset all demo data stored in this browser?")) return;
     localStorage.removeItem(STORE_KEY);
     state = structuredClone(defaultState);
     toast("Demo data reset.");
@@ -1673,27 +2095,48 @@ function handleSubmit(event) {
   const form = event.target.closest("form[data-form]");
   if (!form) return;
   event.preventDefault();
+  if (!validateForm(form)) {
+    toast("Please fix the highlighted fields.", "error", Boolean(state.user));
+    return;
+  }
   const data = Object.fromEntries(new FormData(form));
   if (form.dataset.form === "login") {
-    state.user = { name: data.name || "Pavan Kumar", role: data.role || "Producer" };
+    const user = demoUsers.find((item) => item.username === data.username && item.password === data.password);
+    if (!user) {
+      state.loginError = "Invalid credentials. Use underwriter, agent, or manager with password admin123.";
+      render();
+      return;
+    }
+    state.user = { username: user.username, name: user.name, role: user.role };
+    state.loginError = "";
     state.activeTab = "desktop";
-    toast("Signed in.");
+    toast(`Signed in as ${user.role}.`, "success");
   }
   if (form.dataset.form === "new-account") {
-    const id = `A-${10000 + state.accounts.length + 90}`;
+    const id = generateId("AC");
+    const fullName = `${data.firstName} ${data.lastName}`.trim();
+    const address = [data.address1, data.address2, `${data.city}, ${data.state} ${data.zip}`].filter(Boolean).join(", ");
     const account = {
       id,
-      name: data.name,
-      type: data.type,
+      name: fullName,
+      firstName: data.firstName,
+      lastName: data.lastName,
+      dob: toIsoDate(data.dob),
+      type: data.accountType,
       status: "Pending",
       tier: data.tier,
-      address: data.address,
+      address,
+      address1: data.address1,
+      address2: data.address2,
+      city: data.city,
+      state: data.state,
+      zip: data.zip,
       email: data.email,
-      phone: data.phone,
-      officialId: data.officialId,
-      producer: data.producer,
-      producerCode: data.producerCode,
-      primaryContact: data.primaryContact || data.name,
+      phone: onlyDigits(data.phone),
+      officialId: `DOB ${data.dob}`,
+      producer: "Keystone Agency",
+      producerCode: "KST-1048",
+      primaryContact: fullName,
       created: isoToday(),
       settlementCurrency: "USD",
       coverageCurrency: "USD"
@@ -1702,13 +2145,19 @@ function handleSubmit(event) {
     state.contacts.unshift({ id: `C-${Date.now()}`, accountId: id, name: account.primaryContact, role: "Primary Named Insured", phone: account.phone, email: account.email });
     state.selectedAccountId = id;
     state.newAccountOpen = false;
-    toast("Account created.");
+    toast(`Account ${id} created successfully.`, "success");
   }
   if (form.dataset.form === "driver-update") {
     const driver = getDriver(state.selectedDriverId);
     if (driver) {
-      Object.assign(driver, data);
-      toast("Driver details saved.");
+      Object.assign(driver, {
+        ...data,
+        dob: toIsoDate(data.dob) || driver.dob,
+        licensedDate: toIsoDate(data.licensedDate) || driver.licensedDate,
+        expirationDate: toIsoDate(data.expirationDate) || driver.expirationDate,
+        phone: data.phone ? onlyDigits(data.phone) : ""
+      });
+      toast("Driver details saved.", "success");
     }
   }
   if (form.dataset.form === "new-driver") {
@@ -1718,7 +2167,7 @@ function handleSubmit(event) {
       accountId,
       policyNumber: data.policyNumber || state.selectedPolicyId,
       name: data.name,
-      dob: data.dob,
+      dob: toIsoDate(data.dob) || data.dob,
       gender: "Non-disclosed",
       maritalStatus: "Single",
       phone: "",
@@ -1747,11 +2196,25 @@ function handleSubmit(event) {
 
 function handleChange(event) {
   const target = event.target;
+  if (target.matches("[data-filter-status]")) {
+    state.queueStatusFilter = target.value;
+    state.tablePages.activities = 1;
+  }
+  if (target.matches("[data-date-field]")) {
+    validateElement(target);
+    const iso = toIsoDate(target.value);
+    if (iso) {
+      const patch = { [target.dataset.dateField]: iso };
+      if (target.dataset.dateField === "effective") patch.expiration = plusYear(iso);
+      updateSubmission(patch, true);
+    }
+    return;
+  }
   if (target.matches("[data-submission-field]")) {
-    updateSubmission({ [target.dataset.submissionField]: target.value }, false);
+    updateSubmission({ [target.dataset.submissionField]: target.value }, Boolean(target.closest(".wizard")));
   }
   if (target.matches("[data-number-field]")) {
-    updateSubmission({ [target.dataset.numberField]: Number(target.value || 0) }, false);
+    updateSubmission({ [target.dataset.numberField]: Number(target.value || 0) }, Boolean(target.closest(".wizard")));
   }
   if (target.matches("[data-qualification]")) {
     const submission = getSubmission(state.selectedSubmissionId);
@@ -1761,6 +2224,9 @@ function handleChange(event) {
 }
 
 function handleInput(event) {
+  if (event.target.matches("input, select, textarea")) {
+    validateElement(event.target, false);
+  }
   if (event.target.matches("[data-search]")) {
     state.searchText = event.target.value;
     saveState();
@@ -1773,6 +2239,64 @@ function handleKeydown(event) {
   const value = event.target.value.trim();
   event.target.value = "";
   quickJump(value);
+}
+
+function validateForm(form) {
+  let valid = true;
+  form.querySelectorAll("input, select, textarea").forEach((field) => {
+    if (!validateElement(field, true)) valid = false;
+  });
+  return valid;
+}
+
+function validateWizardStep() {
+  const submission = getSubmission(state.selectedSubmissionId);
+  const panel = app.querySelector(".wizard .panel-body");
+  let valid = true;
+  panel?.querySelectorAll("input, select, textarea").forEach((field) => {
+    if (!validateElement(field, true)) valid = false;
+  });
+  if (state.wizardStep === "quote" && submission && !submission.premium) {
+    toast("Generate a quote before moving to bind and issue.", "error");
+    valid = false;
+  }
+  if (!valid) toast("Please fix the highlighted fields before continuing.", "error");
+  return valid;
+}
+
+function validateElement(field, show = true) {
+  if (field.disabled || field.type === "button" || field.type === "submit") return true;
+  const value = String(field.value || "").trim();
+  let message = "";
+  if (field.required && !value) {
+    message = "This field is required.";
+  } else if (field.dataset.validate === "email" && value && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+    message = "Enter a valid email address.";
+  } else if (field.dataset.validate === "phone" && value && !/^\d{10}$/.test(onlyDigits(value))) {
+    message = "Enter a 10 digit phone number.";
+  } else if (field.dataset.validate === "zip" && value && !/^\d{5}$/.test(value)) {
+    message = "Enter a 5 digit ZIP code.";
+  } else if (field.dataset.validate === "date" && value && !toIsoDate(value)) {
+    message = "Use DD/MM/YYYY format.";
+  } else if (field.dataset.adult === "true" && value && toIsoDate(value) && !isAdult(toIsoDate(value))) {
+    message = "Applicant must be at least 18 years old.";
+  } else if (field.dataset.noPast === "true" && value && toIsoDate(value) && isBeforeToday(toIsoDate(value))) {
+    message = "Effective date cannot be in the past.";
+  } else if (field.type === "number" && field.min !== "" && value && Number(value) < Number(field.min)) {
+    message = `Value must be ${field.min} or greater.`;
+  }
+
+  const fieldWrap = field.closest(".field");
+  const error = fieldWrap?.querySelector(".field-error");
+  const shouldRender = show || fieldWrap?.classList.contains("invalid");
+  if (fieldWrap && shouldRender) fieldWrap.classList.toggle("invalid", Boolean(message));
+  if (error && shouldRender) error.textContent = message;
+  return !message;
+}
+
+function clearFormErrors(form) {
+  form.querySelectorAll(".field.invalid").forEach((field) => field.classList.remove("invalid"));
+  form.querySelectorAll(".field-error").forEach((error) => (error.textContent = ""));
 }
 
 function quickJump(value) {
@@ -1824,7 +2348,7 @@ function createSubmission() {
   const submission = {
     id,
     accountId: account.id,
-    lob: "Businessowners",
+    lob: "Personal Auto",
     quoteType: "Full Application",
     status: "Draft",
     effective: isoToday(),
@@ -1832,7 +2356,15 @@ function createSubmission() {
     producer: account.producer,
     producerCode: account.producerCode,
     uwCompany: "Pinnacle Mutual",
-    stage: "Product",
+    stage: "Product Selection",
+    paymentPlan: "Annual",
+    priorClaims: "No",
+    creditScoreRange: "700-749",
+    yearsDrivingExperience: 5,
+    coverageType: "Full Coverage",
+    coverageLimit: 250000,
+    deductible: 500,
+    quoteNumber: "",
     premium: 0,
     revenue: 0,
     payroll: 0,
@@ -1876,7 +2408,7 @@ function runRiskAnalysis() {
   if (submission.qualifications.eligible === "No") {
     newIssues.push(["Eligibility review", "Quote", "Applicant did not pass base eligibility question."]);
   }
-  if (submission.qualifications.priorLosses === "Yes" || submission.losses > 2) {
+  if (submission.priorClaims === "Yes" || submission.qualifications.priorLosses === "Yes" || submission.losses > 2) {
     newIssues.push(["Prior loss review", "Quote", "Loss history requires underwriter review."]);
   }
   if (submission.qualifications.hazardous === "Yes") {
@@ -1916,26 +2448,19 @@ function approveIssues() {
 function generateQuote() {
   const submission = getSubmission(state.selectedSubmissionId);
   if (!submission) return;
-  const product = products.find((p) => p.lob === submission.lob) || products[0];
-  const exposure =
-    product.base +
-    Number(submission.revenue || 0) * 0.003 +
-    Number(submission.payroll || 0) * 0.004 +
-    Number(submission.locations || 0) * 850 +
-    Number(submission.vehicles || 0) * 420 +
-    Number(submission.losses || 0) * 1200;
-  const quickFactor = submission.quoteType === "Quick Quote" ? 0.92 : 1;
-  const premium = Math.round((exposure * quickFactor) / 10) * 10;
+  const premium = calculatePremium(submission);
   submission.premium = premium;
   submission.status = "Quoted";
-  submission.stage = "Quote";
+  submission.stage = "Quote Generation";
+  submission.quoteNumber ||= generateId("QT");
   if (!submission.versions.length) {
-    submission.versions.push({ name: "Version 1 - Standard", premium, status: "Quoted" });
+    submission.versions.push({ name: `${submission.quoteNumber} - Standard`, premium, status: "Quoted" });
   } else {
     submission.versions[0].premium = premium;
+    submission.versions[0].name = `${submission.quoteNumber} - Standard`;
   }
   syncTransaction(submission);
-  toast("Quote generated.");
+  toast(`Quote ${submission.quoteNumber} generated.`, "success");
 }
 
 function createQuoteVersion() {
@@ -1964,10 +2489,9 @@ function bindSubmission(issue) {
   submission.stage = issue ? "Issued" : "Bound";
   syncTransaction(submission);
 
-  const accountPolicies = state.policies.filter((p) => p.accountId === submission.accountId).length;
-  const prefix = submission.lob.split(" ").map((w) => w[0]).join("").slice(0, 3).toUpperCase();
-  const number = `${prefix}-${460000 + accountPolicies + state.policies.length}`;
-  state.policies.unshift({
+  const existingPolicy = state.policies.find((p) => p.accountId === submission.accountId && p.effective === submission.effective && p.premium === submission.premium && p.lob === submission.lob);
+  const number = existingPolicy?.number || generateId("POL");
+  const policyPayload = {
     number,
     accountId: submission.accountId,
     lob: submission.lob,
@@ -1978,12 +2502,14 @@ function bindSubmission(issue) {
     producer: submission.producer,
     underwriter: "Nina Patel",
     uwCompany: submission.uwCompany,
-    paymentPlan: "Quarterly",
-    coverages: defaultCoverages(submission.lob)
-  });
+    paymentPlan: submission.paymentPlan,
+    coverages: [[submission.coverageType, currencyLimit(submission.coverageLimit)], ["Deductible", money(submission.deductible)], ...defaultCoverages(submission.lob).slice(0, 1)]
+  };
+  if (existingPolicy) Object.assign(existingPolicy, policyPayload);
+  else state.policies.unshift(policyPayload);
   state.selectedPolicyId = number;
   state.activeTab = "policies";
-  toast(issue ? "Policy issued." : "Submission bound.");
+  toast(issue ? `Policy ${number} issued.` : `Policy ${number} bound.`, "success");
 }
 
 function closeSubmission(closeStatus) {
@@ -1992,7 +2518,50 @@ function closeSubmission(closeStatus) {
   submission.status = closeStatus;
   submission.stage = closeStatus;
   syncTransaction(submission);
-  toast(`Submission marked ${closeStatus}.`);
+  toast(`Submission marked ${closeStatus}.`, closeStatus === "Declined" ? "error" : "warning");
+}
+
+function viewQueueItem(type, id) {
+  if (type === "activity") {
+    const activity = state.activities.find((item) => item.id === id);
+    if (activity?.accountId) state.selectedAccountId = activity.accountId;
+    state.activeTab = "accounts";
+  } else if (type === "submission") {
+    state.selectedSubmissionId = id;
+    state.activeTab = "submission";
+  } else if (type === "transaction") {
+    const tx = state.transactions.find((item) => item.id === id);
+    if (tx?.policyNumber) state.selectedPolicyId = tx.policyNumber;
+    state.activeTab = "policies";
+  } else if (type === "underwriting") {
+    const issue = state.uwIssues.find((item) => item.id === id);
+    if (issue?.submissionId) state.selectedSubmissionId = issue.submissionId;
+    state.activeTab = "submission";
+  }
+  toast("Queue item opened.", "info");
+}
+
+function updateQueueItem(type, id, statusValue) {
+  const collections = {
+    activity: state.activities,
+    submission: state.submissions,
+    transaction: state.transactions,
+    underwriting: state.uwIssues
+  };
+  const item = collections[type]?.find((row) => row.id === id);
+  if (!item) return;
+  item.status = statusValue;
+  toast(`Queue item ${statusValue.toLowerCase()}.`, statusValue === "Approved" ? "success" : "warning");
+}
+
+function startLoading() {
+  state.loading = true;
+  clearTimeout(startLoading.timer);
+  startLoading.timer = setTimeout(() => {
+    state.loading = false;
+    saveState();
+    render();
+  }, 180);
 }
 
 function syncTransaction(submission) {
@@ -2009,6 +2578,7 @@ function syncTransaction(submission) {
 function startPolicyAction(kind) {
   const policy = getPolicy(state.selectedPolicyId);
   if (!policy) return;
+  if (kind === "Cancellation" && !confirm(`Start cancellation for ${policy.number}?`)) return;
   const tx = { id: `T-${Date.now()}`, accountId: policy.accountId, policyNumber: policy.number, type: kind, status: "Open", effective: isoToday(), premium: 0 };
   state.transactions.unshift(tx);
   state.activities.unshift({
@@ -2075,9 +2645,33 @@ function verifyDriver() {
   toast("Driver MVR verification completed.");
 }
 
+function saveDriverUpdate() {
+  const form = app.querySelector('form[data-form="driver-update"]');
+  if (!form) {
+    toast("Changes saved.", "success");
+    return;
+  }
+  if (!validateForm(form)) {
+    toast("Please fix the highlighted driver fields.", "error");
+    return;
+  }
+  const driver = getDriver(state.selectedDriverId);
+  if (!driver) return;
+  const data = Object.fromEntries(new FormData(form));
+  Object.assign(driver, {
+    ...data,
+    dob: toIsoDate(data.dob) || driver.dob,
+    licensedDate: toIsoDate(data.licensedDate) || driver.licensedDate,
+    expirationDate: toIsoDate(data.expirationDate) || driver.expirationDate,
+    phone: data.phone ? onlyDigits(data.phone) : ""
+  });
+  toast("Driver details saved.", "success");
+}
+
 function defaultCoverages(lob) {
   if (lob === "Personal Auto") return [["Bodily Injury", "$250,000 / $500,000"], ["Property Damage", "$100,000"], ["Comprehensive Deductible", "$500"]];
-  if (lob === "Workers Compensation") return [["Employers Liability", "$1,000,000"], ["Payroll Basis", "Reported"], ["Final Audit", "Physical"]];
+  if (lob === "Home") return [["Dwelling", "$450,000"], ["Personal Property", "$200,000"], ["Liability", "$300,000"]];
+  if (lob === "Workers Comp" || lob === "Workers Compensation") return [["Employers Liability", "$1,000,000"], ["Payroll Basis", "Reported"], ["Final Audit", "Physical"]];
   if (lob === "Commercial Property") return [["Building", "$2,000,000"], ["Business Personal Property", "$500,000"], ["Business Income", "$300,000"]];
   return [["General Liability Aggregate", "$2,000,000"], ["Each Occurrence", "$1,000,000"], ["Medical Expense", "$10,000"]];
 }
@@ -2167,6 +2761,111 @@ function groupBy(items, key) {
   }, {});
 }
 
+function countByStatus(items) {
+  return items.reduce((acc, item) => {
+    acc[item.status || "Other"] = (acc[item.status || "Other"] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function sameMonth(a, b) {
+  if (!a || !b) return false;
+  return String(a).slice(0, 7) === String(b).slice(0, 7);
+}
+
+function isWithinDays(iso, days) {
+  const target = new Date(`${iso}T00:00:00`);
+  const now = new Date(`${isoToday()}T00:00:00`);
+  const diff = (target - now) / 86400000;
+  return diff >= 0 && diff <= days;
+}
+
+function calculatePremium(submission) {
+  const product = products.find((p) => p.lob === submission.lob) || products[0];
+  const limitFactor = Number(submission.coverageLimit || 250000) / 250000;
+  const deductibleCredit = Math.max(0.72, 1 - Number(submission.deductible || 500) / 18000);
+  const claimsFactor = submission.priorClaims === "Yes" ? 1.18 : 1;
+  const creditFactor = submission.creditScoreRange === "750+" ? 0.9 : submission.creditScoreRange === "Below 600" ? 1.28 : submission.creditScoreRange === "600-649" ? 1.14 : 1;
+  const experienceFactor = Number(submission.yearsDrivingExperience || 0) < 3 && submission.lob === "Personal Auto" ? 1.2 : 1;
+  const exposure =
+    product.base * product.factor +
+    Number(submission.revenue || 0) * 0.0025 +
+    Number(submission.payroll || 0) * 0.0035 +
+    Number(submission.vehicles || 0) * 430 +
+    Number(submission.locations || 0) * 600 +
+    Number(submission.losses || 0) * 900;
+  return Math.max(250, Math.round((exposure * limitFactor * deductibleCredit * claimsFactor * creditFactor * experienceFactor) / 10) * 10);
+}
+
+function currencyLimit(value) {
+  return money(Number(value || 0));
+}
+
+function generateId(prefix) {
+  return `${prefix}-${String(Math.floor(10000 + Math.random() * 90000))}`;
+}
+
+function onlyDigits(value) {
+  return String(value || "").replace(/\D/g, "");
+}
+
+function toIsoDate(value) {
+  const match = String(value || "").trim().match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (!match) return "";
+  const [, day, month, year] = match;
+  const parsed = new Date(Number(year), Number(month) - 1, Number(day));
+  if (parsed.getFullYear() !== Number(year) || parsed.getMonth() !== Number(month) - 1 || parsed.getDate() !== Number(day)) return "";
+  return `${year}-${month}-${day}`;
+}
+
+function displayDate(value) {
+  if (!value) return "";
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(value)) return value;
+  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return value;
+  return `${match[3]}/${match[2]}/${match[1]}`;
+}
+
+function isAdult(iso) {
+  const dob = new Date(`${iso}T00:00:00`);
+  const today = new Date(`${isoToday()}T00:00:00`);
+  let age = today.getFullYear() - dob.getFullYear();
+  const monthDelta = today.getMonth() - dob.getMonth();
+  if (monthDelta < 0 || (monthDelta === 0 && today.getDate() < dob.getDate())) age -= 1;
+  return age >= 18;
+}
+
+function isBeforeToday(iso) {
+  return new Date(`${iso}T00:00:00`) < new Date(`${isoToday()}T00:00:00`);
+}
+
+function highlight(value) {
+  const text = escapeHtml(value ?? "");
+  const q = state.searchText.trim();
+  if (!q) return text;
+  const pattern = new RegExp(`(${escapeRegExp(q)})`, "ig");
+  return text.replace(pattern, "<mark>$1</mark>");
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function barChart(rows, scope) {
+  const max = Math.max(1, ...rows.map((row) => Number(row[1] || 0)));
+  return `
+    <div class="bar-chart">
+      ${rows.map(([label, count], index) => `
+        <div class="bar-row" data-testid="${scope}-bar-${index}">
+          <span>${escapeHtml(label)}</span>
+          <div><i style="width: ${(Number(count || 0) / max) * 100}%"></i></div>
+          <b>${count}</b>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
 function initials(name) {
   return String(name || "User").split(/\s+/).slice(0, 2).map((x) => x[0]).join("").toUpperCase();
 }
@@ -2184,8 +2883,17 @@ function escapeAttr(value) {
   return escapeHtml(value).replace(/`/g, "&#096;");
 }
 
-function toast(message) {
-  toastRoot.innerHTML = `<div class="toast">${escapeHtml(message)}</div>`;
+function slug(value) {
+  return String(value || "item").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "item";
+}
+
+function toast(message, type = "success", persist = true) {
+  toastRoot.innerHTML = `<div class="toast ${escapeAttr(type)}">${escapeHtml(message)}</div>`;
+  if (persist && state?.user) {
+    state.notifications ||= [];
+    state.notifications.unshift({ id: `Ntf-${Date.now()}-${Math.round(Math.random() * 1000)}`, message, type, read: false, created: isoToday() });
+    state.notifications = state.notifications.slice(0, 25);
+  }
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => {
     toastRoot.innerHTML = "";
